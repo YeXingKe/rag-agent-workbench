@@ -99,7 +99,3 @@ npm run dev
 详细的开发文档请参考：
 - [后端文档](./server/README.md)
 - [前端文档](./web/README.md)
-
-## License
-
-MIT
