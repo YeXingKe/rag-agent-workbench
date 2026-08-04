@@ -1,10 +1,12 @@
-from flask import jsonify
-from app.api import api_bp
+from fastapi import APIRouter
+
+router = APIRouter()
 
 
-@api_bp.route('/health', methods=['GET'])
-def health_check():
-    return jsonify({
-        'status': 'ok',
-        'message': 'Server is running'
-    }), 200
+@router.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {
+        "status": "ok",
+        "message": "Server is running"
+    }

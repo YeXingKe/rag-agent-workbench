@@ -1,5 +1,8 @@
-from flask import Blueprint
+from fastapi import APIRouter
 
-api_bp = Blueprint('api', __name__)
+router = APIRouter()
 
 from app.api import health
+
+# Register routers
+router.include_router(health.router, tags=["health"])

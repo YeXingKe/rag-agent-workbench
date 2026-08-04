@@ -1,16 +1,26 @@
-from flask import Flask
-from flask_cors import CORS
-from app.config import Config
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from app.config import settings
+from app.api import router as api_router
 
 
-def create_app(config_class=Config):
-    app = Flask(__name__)
-    app.config.from_object(config_class)
+def create_app() -> FastAPI:
+    app = FastAPI(
+        title=settings.APP_NAME,
+        version=settings.APP_VERSION,
+        debug=settings.DEBUG
+    )
 
-    CORS(app)
+    # CORS
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
-    # Register blueprints
-    from app.api import api_bp
-    app.register_blueprint(api_bp, url_prefix='/api')
+    # Include API routes
+    app.include_router(api_router, prefix="/api")
 
     return app
