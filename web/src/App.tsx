@@ -1,19 +1,18 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
-import { Layout } from 'antd'
-import AppLayout from './components/Layout/AppLayout'
-import HomePage from './pages/Home'
-import GeneratorPage from './pages/Generator'
-import './App.css'
+import Dashboard from './pages/Dashboard'
+import KnowledgeManagement from './pages/KnowledgeManagement'
+import ChunkManagement from './pages/ChunkManagement'
+import AgentConversation from './pages/AgentConversation'
 
 function App() {
   return (
     <BrowserRouter>
-      <AppLayout>
-        <Routes>
-          <Route path="/" element={<HomePage />} />
-          <Route path="/generator" element={<GeneratorPage />} />
-        </Routes>
-      </AppLayout>
+      <Routes>
+        <Route path="/" element={<Dashboard />} />
+        <Route path="/documents" element={<KnowledgeManagement />} />
+        <Route path="/chunks" element={<ChunkManagement />} />
+        <Route path="/agent" element={<AgentConversation />} />
+      </Routes>
     </BrowserRouter>
   )
 }
