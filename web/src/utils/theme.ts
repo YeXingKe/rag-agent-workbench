@@ -1,28 +1,30 @@
+export type AppTheme = 'paper' | 'glass'
+
+export const themeLabels: Record<AppTheme, string> = {
+  paper: '纸片感',
+  glass: '玻璃科技感',
+}
+
 export const colors = {
-    // 背景
-    bg: {
-        base: '#0f172a',
-        elevated: '#1e293b',
-        hover: '#334155',
-    },
-    // 文字
-    text: {
-        primary: '#f1f5f9',
-        secondary: '#cbd5e1',
-        muted: '#94a3b8',
-    },
-    // 主色调
-    accent: {
-        blue: '#3b82f6',
-        cyan: '#06b6d4',
-        purple: '#a855f7',
-        green: '#10b981',
-    },
-    // 状态色
-    status: {
-        success: '#10b981',
-        warning: '#f59e0b',
-        error: '#ef4444',
-        info: '#3b82f6',
-    }
-} as const;
+  bg: {
+    base: 'var(--paper)',
+    elevated: 'var(--paper-raised)',
+    hover: 'var(--accent-soft)',
+  },
+  text: {
+    primary: 'var(--ink)',
+    secondary: 'var(--ink-soft)',
+    muted: 'var(--ink-muted)',
+  },
+  accent: {
+    main: 'var(--accent)',
+    soft: 'var(--accent-soft)',
+    deep: 'var(--accent-deep)',
+  },
+  status: {
+    success: '#047857',
+    warning: '#b45309',
+    error: '#b91c1c',
+    info: 'var(--accent)',
+  },
+} as const

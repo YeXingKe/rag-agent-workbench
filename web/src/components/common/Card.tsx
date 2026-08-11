@@ -1,16 +1,18 @@
-import React from 'react'
+import type { ReactNode } from 'react'
 
 interface CardProps {
-    children: React.ReactNode
-    className?: string
-    title?: string
+  children: ReactNode
+  className?: string
+  title?: string
 }
 
 export default function Card({ children, className = '', title }: CardProps) {
-    return (
-        <div className={`bg-gradient-to-br from-slate-800/50 to-slate-800/20 border border-slate-700/50 rounded-3xl p-8 backdrop-blur-xl ${className}`}>
-            {title && <h2 className="text-xl font-bold text-slate-50 mb-6">{title}</h2>}
-            {children}
-        </div>
-    )
+  return (
+    <section className={`border-t border-line pt-6 ${className}`}>
+      {title && (
+        <h2 className="mb-5 font-display text-lg font-bold tracking-tight text-ink">{title}</h2>
+      )}
+      {children}
+    </section>
+  )
 }

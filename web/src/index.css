@@ -1,23 +1,141 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+@config "../tailwind.config.ts";
+
+/* 纸片感（默认） */
+:root,
+[data-theme="paper"] {
+  --ink: #15181f;
+  --ink-soft: #3d4450;
+  --ink-muted: #6b7380;
+  --paper: #f3f1ec;
+  --paper-raised: #faf9f6;
+  --line: #ddd8ce;
+  --accent: #0d9488;
+  --accent-soft: #e6faf6;
+  --accent-deep: #0f766e;
+  --btn-bg: #dff7f2;
+  --btn-bg-hover: #ccefeb;
+  --btn-text: #0f766e;
+  --ok: #059669;
+  --scroll-thumb: #c4beb2;
+  --scroll-thumb-hover: #a39c8f;
+  --surface-shadow: none;
+  --surface-blur: 0px;
+  --bg-glow-1: rgba(45, 212, 191, 0.08);
+  --bg-glow-2: rgba(21, 24, 31, 0.04);
+  --bg-base-top: #f6f4ef;
+  --bg-base-mid: #f3f1ec;
+  --bg-base-bottom: #efece5;
+}
+
+/* 玻璃科技感 · 浅紫 */
+[data-theme="glass"] {
+  --ink: #1a1530;
+  --ink-soft: #4c4570;
+  --ink-muted: #847eab;
+  --paper: #ebe4f8;
+  --paper-raised: rgba(255, 255, 255, 0.48);
+  --line: rgba(167, 139, 250, 0.22);
+  --accent: #8b5cf6;
+  --accent-soft: rgba(237, 233, 254, 0.9);
+  --accent-deep: #6d28d9;
+  --btn-bg: rgba(237, 233, 254, 0.95);
+  --btn-bg-hover: rgba(221, 214, 254, 0.98);
+  --btn-text: #6d28d9;
+  --ok: #059669;
+  --scroll-thumb: #c4b5fd;
+  --scroll-thumb-hover: #a78bfa;
+  --surface-shadow:
+    0 8px 32px rgba(91, 33, 182, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.65);
+  --surface-blur: 18px;
+  --bg-glow-1: rgba(167, 139, 250, 0.28);
+  --bg-glow-2: rgba(196, 181, 253, 0.22);
+  --bg-base-top: #f5f0ff;
+  --bg-base-mid: #ebe4f8;
+  --bg-base-bottom: #e4dcf7;
+}
 
 * {
-  @apply scroll-smooth;
+  scroll-behavior: smooth;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  min-height: 100dvh;
+  overflow: hidden;
 }
 
 body {
-  @apply bg-slate-900 text-slate-50;
+  margin: 0;
+  color: var(--ink);
+  background-color: var(--paper);
+  font-family: Figtree, system-ui, sans-serif;
+  background-image:
+    radial-gradient(ellipse 70% 45% at 8% 0%, var(--bg-glow-1), transparent 55%),
+    radial-gradient(ellipse 55% 40% at 100% 10%, var(--bg-glow-2), transparent 50%),
+    linear-gradient(180deg, var(--bg-base-top) 0%, var(--bg-base-mid) 42%, var(--bg-base-bottom) 100%);
+  background-attachment: fixed;
+  transition: background-color 0.35s ease, color 0.35s ease;
+}
+
+[data-theme="glass"] body {
+  background-image:
+    radial-gradient(ellipse 60% 50% at 15% -10%, rgba(196, 181, 253, 0.55), transparent 55%),
+    radial-gradient(ellipse 50% 45% at 90% 0%, rgba(167, 139, 250, 0.4), transparent 50%),
+    radial-gradient(ellipse 40% 35% at 70% 80%, rgba(221, 214, 254, 0.5), transparent 55%),
+    linear-gradient(165deg, #f8f5ff 0%, #ebe4f8 45%, #e0d7f5 100%);
+}
+
+/* 玻璃态表面 */
+[data-theme="glass"] .theme-surface,
+[data-theme="glass"] [class*="bg-paper-raised"] {
+  backdrop-filter: blur(var(--surface-blur)) saturate(1.25);
+  -webkit-backdrop-filter: blur(var(--surface-blur)) saturate(1.25);
+  box-shadow: var(--surface-shadow);
 }
 
 ::-webkit-scrollbar {
-  @apply w-2;
+  width: 0.4rem;
 }
 
 ::-webkit-scrollbar-track {
-  @apply bg-slate-800;
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  @apply bg-blue-600 rounded-lg hover:bg-blue-500;
+  background-color: var(--scroll-thumb);
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scroll-thumb-hover);
+}
+
+.font-display {
+  font-family: Syne, Figtree, sans-serif;
+}
+
+/* 主按钮：浅底深字，降低对比刺激 */
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-radius: 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  background: var(--btn-bg);
+  color: var(--btn-text);
+  padding: 0.625rem 1.25rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+.btn-primary:hover {
+  background: var(--btn-bg-hover);
+  border-color: color-mix(in srgb, var(--accent) 42%, transparent);
 }

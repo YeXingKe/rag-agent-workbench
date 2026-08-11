@@ -1,133 +1,161 @@
-import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
+import { RefreshCw, ArrowUpRight, PackageOpen } from 'lucide-react'
 import MainLayout from '../components/layout/MainLayout'
-import StatBox from '../components/common/StatBox'
-import Card from '../components/common/Card'
-import { FileText, Layers, MessageSquare, BarChart3 } from 'lucide-react'
-import { DashboardStats } from '../types'
 
-const containerVariants = {
-    hidden: { opacity: 0 },
-    visible: {
-        opacity: 1,
-        transition: {
-            staggerChildren: 0.1,
-            delayChildren: 0.2,
-        },
-    },
-}
+const stats = [
+  { label: '知识文档', value: '0', hint: '已入库文档总数' },
+  { label: '文本切片', value: '0', hint: '当前文件切分总量' },
+  { label: '最近会话', value: '0', hint: '已记录的智能问答' },
+  { label: '后端状态', value: '检查中', hint: 'Postgres / Redis / Milvus 健康度探测' },
+]
 
-const itemVariants = {
-    hidden: { opacity: 0, y: 20 },
-    visible: {
-        opacity: 1,
-        y: 0,
-        transition: { duration: 0.6, ease: 'easeOut' },
-    },
+function EmptyState({ text }: { text: string }) {
+  return (
+    <div className="flex flex-1 flex-col items-center justify-center gap-3 py-8 text-ink-muted">
+      <div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-dashed border-line bg-paper">
+        <PackageOpen size={28} strokeWidth={1.4} className="text-accent" />
+      </div>
+      <p className="text-sm text-ink-soft">{text}</p>
+    </div>
+  )
 }
 
 export default function Dashboard() {
-    const [stats, setStats] = useState<DashboardStats>({
-        totalDocuments: 0,
-        totalChunks: 0,
-        totalSessions: 0,
-        systemHealth: 'healthy',
-    })
+  return (
+    <MainLayout>
+      <div className="flex min-h-full w-full flex-1 flex-col gap-4 lg:gap-5">
+        {/* 页头 */}
+        <motion.div
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4 }}
+          className="flex shrink-0 flex-wrap items-end justify-between gap-4 rounded-2xl border border-line bg-paper-raised px-5 py-4 sm:px-6"
+        >
+          <div>
+            <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.18em] text-accent">
+              Workspace
+            </p>
+            <h1 className="font-display text-2xl font-extrabold tracking-tight text-ink sm:text-3xl">
+              工作台
+            </h1>
+          </div>
+          <button
+            type="button"
+            className="inline-flex items-center gap-2 rounded-xl border border-line bg-paper px-4 py-2 text-sm font-medium text-ink-soft transition-colors hover:border-accent/30 hover:text-ink"
+          >
+            <RefreshCw size={15} />
+            刷新数据
+          </button>
+        </motion.div>
 
-    useEffect(() => {
-        // 模拟 API 调用
-        setStats({
-            totalDocuments: 24,
-            totalChunks: 128,
-            totalSessions: 12,
-            systemHealth: 'healthy',
-        })
-    }, [])
+        {/* 产品横幅 */}
+        <motion.section
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.45, delay: 0.05 }}
+          className="relative shrink-0 overflow-hidden rounded-2xl border border-accent/15 bg-accent-soft/40 px-5 py-6 sm:px-7 sm:py-7"
+        >
+          <div className="pointer-events-none absolute -right-8 -top-10 h-40 w-40 rounded-full bg-accent/10 blur-3xl" />
+          <div className="pointer-events-none absolute bottom-0 right-10 h-24 w-24 rounded-full border border-accent/20 bg-paper-raised/50" />
 
-    return (
-        <MainLayout>
-            <motion.div
-                initial={{ opacity: 0, y: -20 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="mb-8"
-            >
-                <h1 className="text-4xl font-bold bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent mb-2">
-                    RAG Agent Studio
-                </h1>
-                <p className="text-slate-400">
-                    从文档输入库 / OCR 图片表格识别到 Agent 源数据对话的端到端解决方案
-                </p>
-            </motion.div>
-
-            <motion.div
-                variants={containerVariants}
-                initial="hidden"
-                animate="visible"
-                className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8"
-            >
-                <motion.div variants={itemVariants}>
-                    <StatBox
-                        title="知识文档"
-                        value={stats.totalDocuments}
-                        unit="已入库"
-                        icon={FileText}
-                        trend={12}
-                    />
-                </motion.div>
-                <motion.div variants={itemVariants}>
-                    <StatBox
-                        title="总 Chunk"
-                        value={stats.totalChunks}
-                        unit="已分割"
-                        icon={Layers}
-                        trend={8}
-                    />
-                </motion.div>
-                <motion.div variants={itemVariants}>
-                    <StatBox
-                        title="最近会话"
-                        value={stats.totalSessions}
-                        unit="已记录"
-                        icon={MessageSquare}
-                        trend={15}
-                    />
-                </motion.div>
-                <motion.div variants={itemVariants}>
-                    <StatBox
-                        title="系统检查"
-                        value={stats.systemHealth === 'healthy' ? '正常' : '异常'}
-                        icon={BarChart3}
-                    />
-                </motion.div>
-            </motion.div>
-
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                <motion.div
-                    initial={{ opacity: 0, x: -20 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    transition={{ delay: 0.4 }}
-                >
-                    <Card title="最近文档">
-                        <div className="flex flex-col items-center justify-center h-64 text-slate-500">
-                            <FileText size={48} className="mb-4 opacity-50" />
-                            <p>暂无文档记录</p>
-                        </div>
-                    </Card>
-                </motion.div>
-
-                <motion.div
-                    initial={{ opacity: 0, x: 20 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    transition={{ delay: 0.4 }}
-                >
-                    <Card title="最近会话">
-                        <div className="flex flex-col items-center justify-center h-64 text-slate-500">
-                            <MessageSquare size={48} className="mb-4 opacity-50" />
-                            <p>暂无会话记录</p>
-                        </div>
-                    </Card>
-                </motion.div>
+          <div className="relative grid gap-6 lg:grid-cols-[1.5fr_auto] lg:items-end">
+            <div className="max-w-4xl">
+              <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-accent">
+                RAG Product Surface
+              </p>
+              <h2 className="font-display text-xl font-bold leading-snug tracking-tight text-ink sm:text-2xl lg:text-[26px] lg:leading-snug">
+                从知识导入 / OCR 图片表格识别、文本切片观测到智能问答溯源，前后端链路已全部打通
+                <span className="text-accent">【全栈 AI 开发工程化能力】</span>
+              </h2>
+              <p className="mt-3 max-w-3xl text-sm leading-relaxed text-ink-soft">
+                这里汇聚文档、检索、会话与系统面板的核心状态。你可以从工作台进入任意板块，直接进行知识导入、切片检查、召回试验和对话回放。
+              </p>
             </div>
-        </MainLayout>
-    )
+
+            <div className="flex flex-wrap gap-3 lg:flex-col lg:items-stretch">
+              <Link
+                to="/upload"
+                className="btn-primary"
+              >
+                开始知识导入
+                <ArrowUpRight size={15} />
+              </Link>
+              <Link
+                to="/agent"
+                className="inline-flex items-center justify-center rounded-xl border border-line bg-paper-raised px-5 py-2.5 text-sm font-medium text-ink-soft transition-colors hover:border-accent/30 hover:text-ink"
+              >
+                打开智能问答
+              </Link>
+            </div>
+          </div>
+        </motion.section>
+
+        {/* 指标 */}
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.45, delay: 0.1 }}
+          className="grid shrink-0 grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4"
+        >
+          {stats.map((item) => (
+            <div
+              key={item.label}
+              className="rounded-2xl border border-line bg-paper-raised px-4 py-4 sm:px-5 sm:py-5"
+            >
+              <p className="text-sm text-ink-muted">{item.label}</p>
+              <p className="mt-2 font-display text-2xl font-bold tracking-tight text-ink sm:mt-3 sm:text-3xl">
+                {item.value}
+              </p>
+              <p className="mt-2 text-xs leading-relaxed text-ink-muted">{item.hint}</p>
+            </div>
+          ))}
+        </motion.div>
+
+        {/* 最近列表：占满剩余高度 */}
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.45, delay: 0.16 }}
+          className="grid min-h-[280px] flex-1 grid-cols-1 gap-3 sm:gap-4 lg:grid-cols-2"
+        >
+          <section className="flex min-h-0 flex-col rounded-2xl border border-line bg-paper-raised p-5 sm:p-6">
+            <div className="mb-2 flex shrink-0 items-start justify-between gap-3">
+              <div>
+                <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-accent">
+                  Documents
+                </p>
+                <h3 className="font-display text-lg font-bold text-ink">最近文档</h3>
+              </div>
+              <Link
+                to="/documents"
+                className="text-sm font-medium text-accent-deep transition-colors hover:text-accent"
+              >
+                查看全部
+              </Link>
+            </div>
+            <EmptyState text="暂无文档数据" />
+          </section>
+
+          <section className="flex min-h-0 flex-col rounded-2xl border border-line bg-paper-raised p-5 sm:p-6">
+            <div className="mb-2 flex shrink-0 items-start justify-between gap-3">
+              <div>
+                <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-accent">
+                  Sessions
+                </p>
+                <h3 className="font-display text-lg font-bold text-ink">最近会话</h3>
+              </div>
+              <Link
+                to="/agent"
+                className="text-sm font-medium text-accent-deep transition-colors hover:text-accent"
+              >
+                进入问答
+              </Link>
+            </div>
+            <EmptyState text="暂无会话记录" />
+          </section>
+        </motion.div>
+      </div>
+    </MainLayout>
+  )
 }

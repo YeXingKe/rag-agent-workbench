@@ -5,40 +5,29 @@ export default {
   theme: {
     extend: {
       colors: {
-        primary: {
-          50: '#f0f7ff',
-          100: '#e0effe',
-          500: '#3b82f6',
-          600: '#2563eb',
-          700: '#1d4ed8',
-          900: '#1e3a8a',
+        ink: {
+          DEFAULT: 'var(--ink)',
+          soft: 'var(--ink-soft)',
+          muted: 'var(--ink-muted)',
+        },
+        paper: {
+          DEFAULT: 'var(--paper)',
+          raised: 'var(--paper-raised)',
+        },
+        line: 'var(--line)',
+        accent: {
+          DEFAULT: 'var(--accent)',
+          soft: 'var(--accent-soft)',
+          deep: 'var(--accent-deep)',
         },
       },
-      animation: {
-        glow: 'glow 6s ease-in-out infinite',
-        pulseGlow: 'pulseGlow 4s ease-in-out infinite',
-        gradientShift: 'gradientShift 15s ease infinite',
+      fontFamily: {
+        sans: ['Figtree', 'system-ui', 'sans-serif'],
+        display: ['Syne', 'Figtree', 'sans-serif'],
       },
-      keyframes: {
-        glow: {
-          '0%, 100%': {
-            transform: 'translate(0, 0) scale(1)',
-            opacity: '1',
-          },
-          '50%': {
-            transform: 'translate(-30px, -30px) scale(1.1)',
-            opacity: '0.8',
-          },
-        },
-        pulseGlow: {
-          '0%, 100%': { opacity: '0.5' },
-          '50%': { opacity: '1' },
-        },
-        gradientShift: {
-          '0%, 100%': { backgroundPosition: '0% 50%' },
-          '50%': { backgroundPosition: '100% 50%' },
-        }
-      }
+      boxShadow: {
+        panel: 'var(--surface-shadow)',
+      },
     },
   },
   plugins: [],
