@@ -1,27 +1,42 @@
-# Web Framework
-fastapi==0.115.0
-uvicorn[standard]==0.30.6
-python-multipart==0.0.9
+# ===== Web 框架 =====
+fastapi==0.115.0                 # Web API 框架
+uvicorn[standard]==0.30.6        # ASGI 服务器（运行 FastAPI）
+python-multipart==0.0.9          # 解析 multipart 表单（文件上传）
 
-# Database
-sqlalchemy==2.0.32
-alembic==1.13.2
-psycopg[binary]>=3.1.0
-redis==5.0.8
-pymilvus==2.4.5
+# ===== 数据库 =====
+sqlalchemy==2.0.32               # ORM，操作关系型数据库
+alembic>=1.13.0                  # 数据库迁移工具
+psycopg[binary]>=3.1.0           # PostgreSQL 驱动（psycopg3）
+redis>=5.0.0                     # Redis 客户端（缓存 / 会话）
 
-# AI & LLM
-langchain==0.2.16
-langchain-community==0.2.16
-langgraph==0.2.16
-dashscope==1.20.4
+# ===== AI & LLM =====
+langchain>=1.2.10                # LLM 应用编排框架
+langchain-core>=1.2.10           # LangChain 核心抽象与接口
+langchain-community>=0.1.0       # LangChain 社区集成（含 ChatTongyi）
+langgraph>=1.0.10                # 多智能体 / 有状态工作流图
+dashscope>=1.14.1                # 通义千问官方 SDK（勿用 langchain-dashscope：其 tiktoken<0.8 不支持 Python 3.13）
+langgraph-checkpoint-postgres>=1.0.0  # LangGraph 状态持久化到 Postgres
+tiktoken>=0.8.0                  # Token 计数（需 >=0.8 才有 Python 3.13 预编译包）
 
-# OCR
-baidu-aip==4.16.13
+# ===== OCR =====
+baidu-aip==4.16.13               # 百度 OCR SDK（图片 / 表格识别）
 
-# Utilities
-python-dotenv==1.0.1
-pydantic==2.8.2
-pydantic-settings==2.4.0
-httpx==0.27.0
+# ===== 工具库 =====
+python-dotenv>=1.0.0             # 加载 .env 环境变量
+pydantic>=2.0.0                  # 数据校验与模型定义
+pydantic-settings>=2.0.0         # 基于 Pydantic 的配置管理
+httpx==0.27.0                    # 异步 HTTP 客户端
 
+# ===== 向量数据库 =====
+langchain-milvus>=0.1.0          # LangChain 的 Milvus 向量存储集成
+pymilvus>=2.4.0                  # Milvus 官方 Python SDK
+
+# ===== 文档解析 =====
+pypdf>=4.0.0                     # 解析 PDF
+python-docx>=1.1.0               # 解析 Word（docx）
+markdown>=3.5.0                  # Markdown 解析 / 渲染
+chardet>=5.0.0                   # 检测文本文件编码
+
+# ===== 检索 =====
+rank-bm25>=0.2.0                 # BM25 词法检索算法
+jieba>=0.42.0                    # 中文分词（配合 BM25）
