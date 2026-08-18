@@ -1,8 +1,16 @@
+/**
+ * 结构化文本切分器。
+ *
+ * 面向字段定义、SQL/DDL、配置项列表等「条目型」文本：
+ * 尽量让一个 chunk 保留完整的条目块语义，过长块再回退到非结构化切分。
+ */
+
 import { DEFAULT_CHUNK_OVERLAP, DEFAULT_CHUNK_SIZE } from '../constants.js';
 import { cleanText } from '../../utils/text.js';
 import type { SplitChunk } from './types.js';
 import { splitUnstructuredText } from './unstructured.js';
 
+/** 识别「更像结构化行」的启发式正则（键值对、列表、编号、SQL 关键字等）。 */
 const STRUCTURED_LINE_PATTERNS = [
   /^\s*[\p{L}\p{N}_.-]+\s*[:：]\s*.+$/iu,
   /^\s*[-*]\s+.+$/iu,
@@ -10,6 +18,7 @@ const STRUCTURED_LINE_PATTERNS = [
   /^\s*(create|alter|drop|select|insert|update|delete)\b.+$/iu,
 ];
 
+/** 判断单行是否更像结构化/配置型内容。 */
 function isStructuredLine(line: string): boolean {
   const normalizedLine = line.trim();
   if (!normalizedLine) {
@@ -21,6 +30,19 @@ function isStructuredLine(line: string): boolean {
   });
 }
 
+/**
+ * 面向结构化文本的切分策略。
+ *
+ * 适用场景：
+ * - 参数说明 / 字段定义
+ * - SQL / DDL
+ * - 配置项列表
+ *
+ * 算法要点：
+ * 1. 空行拆块；
+ * 2. 命中结构化行时开启新块；
+ * 3. 单块超长则回退 splitUnstructuredText。
+ */
 export function splitStructuredText(
   text: string,
   options: {
@@ -43,6 +65,7 @@ export function splitStructuredText(
   for (const line of lines) {
     const strippedLine = line.trim();
     if (!strippedLine) {
+      // 空行：结束当前条目块
       if (currentBlock.length > 0) {
         groupedBlocks.push(currentBlock.join('\n'));
         currentBlock = [];
@@ -51,6 +74,7 @@ export function splitStructuredText(
     }
 
     if (isStructuredLine(strippedLine)) {
+      // 新条目开始：先落盘旧块
       if (currentBlock.length > 0) {
         groupedBlocks.push(currentBlock.join('\n'));
       }
@@ -65,6 +89,7 @@ export function splitStructuredText(
     groupedBlocks.push(currentBlock.join('\n'));
   }
 
+  // 未识别出任何结构块时，退回通用切分
   if (groupedBlocks.length === 0) {
     return splitUnstructuredText(cleanedText, { chunk_size: chunkSize, chunk_overlap: chunkOverlap });
   }
@@ -90,6 +115,7 @@ export function splitStructuredText(
           end_offset: offsetCursor + blockChunk.end_offset,
         });
       }
+      // +2 近似补偿块之间的换行间隔，仅用于偏移估算
       offsetCursor += normalizedBlock.length + 2;
       continue;
     }

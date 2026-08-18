@@ -1,3 +1,10 @@
+/**
+ * Agent 工具定义：知识库检索。
+ *
+ * 将 retrieveChunks 包装为 search_knowledge_base，供 ReAct 循环调用；
+ * 命中结果写入当前 RetrievalTrace，便于 SSE / 同步响应返回溯源。
+ */
+
 import { z } from 'zod';
 
 import { getCurrentRetrievalTrace } from './runtime.js';
@@ -6,13 +13,20 @@ import { withSession } from '../core/postgres.js';
 import { retrieveChunks } from '../rag/retriever.js';
 import { logger } from '../utils/logger.js';
 
+/** 知识库检索工具输入校验。 */
 export const searchKnowledgeBaseInputSchema = z.object({
+  /** 需要检索的用户问题或关键词 */
   query: z.string().describe('需要检索的用户问题或关键词'),
+  /** 返回最相关的片段数量，默认 5，范围 1~8 */
   top_k: z.number().int().min(1).max(8).default(5).describe('返回最相关的片段数量'),
 });
 
 export type SearchKnowledgeBaseInput = z.infer<typeof searchKnowledgeBaseInputSchema>;
 
+/**
+ * OpenAI tools 协议下的 search_knowledge_base 工具 schema。
+ * 描述会注入到模型侧，引导何时调用。
+ */
 export const SEARCH_KNOWLEDGE_BASE_TOOL = {
   type: 'function' as const,
   function: {
@@ -45,6 +59,7 @@ export const SEARCH_KNOWLEDGE_BASE_TOOL = {
   },
 };
 
+/** 把工具返回内容裁剪到适合模型阅读的长度。 */
 function truncateContent(content: string, maxLength = 400): string {
   const normalized = String(content ?? '')
     .split(/\s+/)
@@ -56,10 +71,18 @@ function truncateContent(content: string, maxLength = 400): string {
   return `${normalized.slice(0, maxLength).trimEnd()}...`;
 }
 
+/** 在短生命周期 DB 会话中执行回调。 */
 async function runWithDb<T>(fn: (db: Queryable) => Promise<T>): Promise<T> {
   return withSession(fn);
 }
 
+/**
+ * 检索知识库中与问题最相关的内容片段，并返回可引用的来源编号文本。
+ *
+ * 若当前上下文绑定了 RetrievalTrace：
+ * - effectiveTopK = min(请求 top_k, trace.top_k)
+ * - 命中列表写入 trace.source_chunks（含 ref_id）
+ */
 export async function searchKnowledgeBase(query: string, top_k = 5): Promise<string> {
   const parsed = searchKnowledgeBaseInputSchema.parse({ query, top_k });
   const trace = getCurrentRetrievalTrace();
@@ -134,6 +157,9 @@ export async function searchKnowledgeBase(query: string, top_k = 5): Promise<str
   return lines.join('\n\n');
 }
 
+/**
+ * 返回 Agent 可用工具列表（当前仅知识库检索）。
+ */
 export function getAgentTools(): Array<{
   name: string;
   schema: typeof SEARCH_KNOWLEDGE_BASE_TOOL;

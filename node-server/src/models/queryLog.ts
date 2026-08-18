@@ -1,19 +1,28 @@
+/**
+ * QueryLog 表模型与 CRUD
+ *
+ * 记录问答会话的问题、回答、路由与耗时，便于审计与调试。
+ */
 import { randomUUID } from 'node:crypto';
 
 import type { Queryable } from '../core/postgres.js';
 
+/** query_log 表一行的 TypeScript 映射。 */
 export interface QueryLogRow {
   id: string;
   session_id: string | null;
   user_question: string;
   answer: string | null;
+  /** 路由标签，如 rag / agent。 */
   route: string;
   latency_ms: number | null;
+  /** 引用的源分块摘要列表（JSONB）。 */
   source_chunks: unknown[];
   created_at: Date;
   updated_at: Date;
 }
 
+/** 创建 query_log 表的 DDL（幂等）。 */
 export const CREATE_QUERY_LOG_TABLE_SQL = `
 CREATE TABLE IF NOT EXISTS query_log (
   id VARCHAR(36) PRIMARY KEY,
@@ -28,10 +37,12 @@ CREATE TABLE IF NOT EXISTS query_log (
 )
 `;
 
+/** query_log 表索引 DDL。 */
 export const CREATE_QUERY_LOG_INDEXES_SQL = [
   `CREATE INDEX IF NOT EXISTS ix_query_log_session_id ON query_log (session_id)`,
 ];
 
+/** 将 JSONB / 字符串规范为数组；异常时返回空数组。 */
 function asJsonArray(value: unknown): unknown[] {
   if (Array.isArray(value)) {
     return value;
@@ -47,6 +58,7 @@ function asJsonArray(value: unknown): unknown[] {
   return [];
 }
 
+/** 将 pg 行记录映射为 QueryLogRow。 */
 function mapQueryLog(row: Record<string, unknown>): QueryLogRow {
   return {
     id: String(row.id),
@@ -61,6 +73,7 @@ function mapQueryLog(row: Record<string, unknown>): QueryLogRow {
   };
 }
 
+/** 插入查询日志时的入参。 */
 export interface QueryLogInsertInput {
   id?: string;
   session_id?: string | null;
@@ -71,6 +84,7 @@ export interface QueryLogInsertInput {
   source_chunks?: unknown[];
 }
 
+/** 写入一条问答日志，默认 route=rag。 */
 export async function insertQueryLog(db: Queryable, input: QueryLogInsertInput): Promise<QueryLogRow> {
   const id = input.id ?? randomUUID();
   const result = await db.query(
@@ -93,6 +107,7 @@ export async function insertQueryLog(db: Queryable, input: QueryLogInsertInput):
   return mapQueryLog(result.rows[0] as Record<string, unknown>);
 }
 
+/** 按会话 id 正序列出问答历史（用于多轮上下文）。 */
 export async function listQueryLogsBySession(db: Queryable, sessionId: string): Promise<QueryLogRow[]> {
   const result = await db.query(
     'SELECT * FROM query_log WHERE session_id = $1 ORDER BY created_at ASC',

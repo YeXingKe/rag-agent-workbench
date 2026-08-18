@@ -1,3 +1,9 @@
+/**
+ * 全局配置模块
+ *
+ * 从 `node-server/.env` 读取环境变量，组装为 Settings；
+ * 通过 getSettings() 单例缓存，供全应用复用。
+ */
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -6,12 +12,13 @@ import dotenv from 'dotenv';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-/** `node-server/` directory (`.env` and `storage` live here). */
+/** `node-server/` 目录（`.env` 与 `storage` 都在此下）。 */
 export const BASE_DIR = path.resolve(__dirname, '..', '..');
 const ENV_FILE = path.join(BASE_DIR, '.env');
 
 dotenv.config({ path: ENV_FILE });
 
+/** 应用运行所需的全部配置项。 */
 export interface Settings {
   appName: string;
   appVersion: string;
@@ -41,17 +48,25 @@ export interface Settings {
   ocrAccessToken: string;
   ocrClientId: string;
   ocrClientSecret: string;
+  /** PDF 单页文本低于该字数时，倾向触发 OCR。 */
   ocrPdfMinPageChars: number;
+  /** 空页占比超过该阈值时，倾向触发 OCR。 */
   ocrPdfEmptyPageRatio: number;
+  /** 页面平均字数低于该值时，倾向触发 OCR。 */
   ocrPdfLowTextAvgChars: number;
+  /** 表格样行数阈值，用于半结构化切分判断。 */
   ocrTableLikeLineThreshold: number;
+  /** DOCX 抽取文本过短时触发 OCR 的字数下限。 */
   ocrDocxMinChars: number;
   ocrPollMaxAttempts: number;
   ocrPollIntervalSec: number;
+  /** 优先使用 MILVUS_URI；否则由 host+port 拼出。 */
   readonly resolvedMilvusUri: string;
+  /** 上传目录绝对路径：BASE_DIR/storageRoot/uploadDirName。 */
   readonly uploadDir: string;
 }
 
+/** 读取环境变量；空字符串视为未配置。 */
 function readEnv(name: string): string | undefined {
   const value = process.env[name];
   if (value === undefined) {
@@ -61,6 +76,7 @@ function readEnv(name: string): string | undefined {
   return trimmed.length === 0 ? undefined : trimmed;
 }
 
+/** 解析布尔环境变量；无法识别时回退到 fallback。 */
 function parseBool(raw: string | undefined, fallback: boolean): boolean {
   if (raw === undefined) {
     return fallback;
@@ -91,6 +107,10 @@ function parseFloatValue(raw: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+/**
+ * 解析 CORS 允许源列表。
+ * 支持 JSON 数组（以 `[` 开头）或逗号分隔字符串。
+ */
 function parseAllowOrigins(raw: string | undefined): string[] {
   const fallback = ['http://localhost:5173'];
   if (!raw) {
@@ -103,7 +123,7 @@ function parseAllowOrigins(raw: string | undefined): string[] {
         return parsed as string[];
       }
     } catch {
-      // Fall through to comma-separated parsing.
+      // JSON 解析失败则回退为逗号分隔。
     }
   }
   return raw
@@ -112,6 +132,7 @@ function parseAllowOrigins(raw: string | undefined): string[] {
     .filter((item) => item.length > 0);
 }
 
+/** 从环境变量组装 Settings（含 OCR / Milvus / 存储等）。 */
 function loadSettings(): Settings {
   const storageRoot = readEnv('STORAGE_ROOT') ?? 'storage';
   const uploadDirName = readEnv('UPLOAD_DIR_NAME') ?? 'uploads';
@@ -171,6 +192,11 @@ function loadSettings(): Settings {
 
 let cachedSettings: Settings | null = null;
 
+/**
+ * 获取全局配置（懒加载单例）。
+ *
+ * 首次调用时从环境变量加载并缓存；后续直接返回缓存。
+ */
 export function getSettings(): Settings {
   if (!cachedSettings) {
     cachedSettings = loadSettings();
@@ -178,4 +204,5 @@ export function getSettings(): Settings {
   return cachedSettings;
 }
 
+/** 模块加载时即初始化的配置快照，便于直接 import 使用。 */
 export const settings: Settings = getSettings();

@@ -1,3 +1,10 @@
+/**
+ * 文档入库（ingest）流水线。
+ *
+ * RAG 写入路径：LoadedDocument → 选 splitter 切 chunk → 写 Postgres →
+ * 向量化写入 Milvus → 更新文档状态。也支持纯文本入库与重建。
+ */
+
 import path from 'node:path';
 
 import type { Queryable } from '../core/postgres.js';
@@ -25,11 +32,21 @@ import { SPLITTER_REGISTRY, type SplitChunk } from './splitters/index.js';
 
 const logger = createLogger('rag.ingest');
 
+/**
+ * 根据文件名推断文件类型。
+ *
+ * 第一版先用扩展名判断即可，后续可升级为更细粒度的 MIME 识别。
+ */
 function inferFileType(filename: string): string {
   const suffix = path.extname(filename).toLowerCase().replace(/^\./, '');
   return suffix || 'txt';
 }
 
+/**
+ * 统一生成 chunk 元数据。
+ *
+ * 集中构造来源字段，供前端溯源、Agent 引用与检索调试复用。
+ */
 function buildChunkMetadata(input: {
   document: DocumentRow;
   knowledgeBase: string;
@@ -53,6 +70,11 @@ function buildChunkMetadata(input: {
   };
 }
 
+/**
+ * 推断切分策略名。
+ *
+ * 优先使用调用方指定；否则按 section_type / file_type 启发式选择。
+ */
 function inferSplitterName(input: {
   fileType: string;
   sectionMetadata: Record<string, unknown>;
@@ -75,6 +97,7 @@ function inferSplitterName(input: {
   return 'unstructured';
 }
 
+/** 对单个 section 执行切分，返回策略名与 chunk 列表。 */
 function splitSection(input: {
   text: string;
   fileType: string;
@@ -86,6 +109,10 @@ function splitSection(input: {
   return [splitterName, splitter(input.text)];
 }
 
+/**
+ * 按 vector_id 从 Milvus 删除向量。
+ * 删除失败不阻断后续重建流程。
+ */
 export async function deleteChunkVectors(chunks: ChunkRow[]): Promise<void> {
   const vectorIds = chunks.map((chunk) => chunk.vector_id).filter((id): id is string => Boolean(id));
   if (vectorIds.length === 0) {
@@ -96,10 +123,19 @@ export async function deleteChunkVectors(chunks: ChunkRow[]): Promise<void> {
   try {
     await vectorStore.delete(vectorIds);
   } catch {
-    // Vector delete failure should not block rebuild.
+    // 向量删除失败不应阻断重建
   }
 }
 
+/**
+ * 核心入库流程。
+ *
+ * 1. 创建或更新 Document 行；
+ * 2. 逐 section 选 splitter 切分；
+ * 3. 批量插入 Chunk；
+ * 4. 写入向量并回填 vector_id；
+ * 5. 更新文档 chunk_count / status。
+ */
 export async function ingestLoadedDocument(
   db: Queryable,
   options: {
@@ -251,6 +287,7 @@ export async function ingestLoadedDocument(
   return document;
 }
 
+/** 纯文本内容入库（无上传文件时）。 */
 export async function ingestTextDocument(
   db: Queryable,
   options: {
@@ -273,6 +310,7 @@ export async function ingestTextDocument(
   });
 }
 
+/** 从本地文件路径加载并入库。 */
 export async function ingestFileDocument(
   db: Queryable,
   options: {
@@ -294,6 +332,12 @@ export async function ingestFileDocument(
   });
 }
 
+/**
+ * 重建文档的 chunk 与向量。
+ *
+ * 先删旧向量与旧 chunk，再按 source_path 重新加载；
+ * 无源文件时用现有 chunk 文本拼接回退。
+ */
 export async function rebuildDocumentChunks(
   db: Queryable,
   options: {

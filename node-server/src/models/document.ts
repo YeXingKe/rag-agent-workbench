@@ -1,7 +1,13 @@
+/**
+ * Document 表模型与 CRUD
+ *
+ * 对应知识库中的源文档元数据（文件名、状态、分块数等）。
+ */
 import { randomUUID } from 'node:crypto';
 
 import type { Queryable } from '../core/postgres.js';
 
+/** document 表一行的 TypeScript 映射。 */
 export interface DocumentRow {
   id: string;
   knowledge_base: string;
@@ -16,6 +22,7 @@ export interface DocumentRow {
   updated_at: Date;
 }
 
+/** 创建 document 表的 DDL（幂等）。 */
 export const CREATE_DOCUMENT_TABLE_SQL = `
 CREATE TABLE IF NOT EXISTS document (
   id VARCHAR(36) PRIMARY KEY,
@@ -32,10 +39,12 @@ CREATE TABLE IF NOT EXISTS document (
 )
 `;
 
+/** document 表索引 DDL。 */
 export const CREATE_DOCUMENT_INDEXES_SQL = [
   `CREATE INDEX IF NOT EXISTS ix_document_knowledge_base ON document (knowledge_base)`,
 ];
 
+/** 将 pg 行记录映射为 DocumentRow。 */
 function mapDocument(row: Record<string, unknown>): DocumentRow {
   return {
     id: String(row.id),
@@ -52,6 +61,7 @@ function mapDocument(row: Record<string, unknown>): DocumentRow {
   };
 }
 
+/** 插入文档时的入参；缺省 id 时自动生成 UUID。 */
 export interface DocumentInsertInput {
   id?: string;
   knowledge_base: string;
@@ -64,6 +74,7 @@ export interface DocumentInsertInput {
   summary?: string | null;
 }
 
+/** 插入一条文档记录，默认 status=uploaded。 */
 export async function insertDocument(db: Queryable, input: DocumentInsertInput): Promise<DocumentRow> {
   const id = input.id ?? randomUUID();
   const result = await db.query(
@@ -88,6 +99,7 @@ export async function insertDocument(db: Queryable, input: DocumentInsertInput):
   return mapDocument(result.rows[0] as Record<string, unknown>);
 }
 
+/** 按主键全量更新文档字段，并刷新 updated_at。 */
 export async function saveDocument(db: Queryable, document: DocumentRow): Promise<DocumentRow> {
   const result = await db.query(
     `
@@ -122,6 +134,10 @@ export async function saveDocument(db: Queryable, document: DocumentRow): Promis
   return mapDocument(result.rows[0] as Record<string, unknown>);
 }
 
+/**
+ * 部分更新：先读再合并 patch 后 save。
+ * 保留原 id / created_at。
+ */
 export async function updateDocument(
   db: Queryable,
   id: string,
@@ -134,6 +150,7 @@ export async function updateDocument(
   return saveDocument(db, { ...current, ...patch, id: current.id, created_at: current.created_at });
 }
 
+/** 按 id 查询文档；不存在返回 null。 */
 export async function getDocumentById(db: Queryable, id: string): Promise<DocumentRow | null> {
   const result = await db.query('SELECT * FROM document WHERE id = $1', [id]);
   if (!result.rows[0]) {
@@ -142,11 +159,16 @@ export async function getDocumentById(db: Queryable, id: string): Promise<Docume
   return mapDocument(result.rows[0] as Record<string, unknown>);
 }
 
+/** 按 updated_at 倒序列出全部文档。 */
 export async function listDocuments(db: Queryable): Promise<DocumentRow[]> {
   const result = await db.query('SELECT * FROM document ORDER BY updated_at DESC');
   return result.rows.map((row) => mapDocument(row as Record<string, unknown>));
 }
 
+/**
+ * 按 id 删除文档。
+ * @returns 是否实际删除到行
+ */
 export async function deleteDocumentById(db: Queryable, id: string): Promise<boolean> {
   const result = await db.query('DELETE FROM document WHERE id = $1', [id]);
   return (result.rowCount ?? 0) > 0;

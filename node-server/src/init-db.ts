@@ -1,3 +1,9 @@
+/**
+ * 数据库初始化脚本
+ *
+ * 创建 document / chunk / query_log 表及索引后退出；
+ * 生产环境更推荐使用正式迁移工具。
+ */
 import { initTables } from './models/index.js';
 import { closePool } from './core/postgres.js';
 

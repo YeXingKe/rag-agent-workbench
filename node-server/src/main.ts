@@ -1,3 +1,8 @@
+/**
+ * HTTP 服务入口
+ *
+ * 配置日志后创建 Express 应用并监听 APP_HOST / APP_PORT。
+ */
 import { createApp } from './app.js';
 import { getSettings } from './config/settings.js';
 import { configureLogging, logger } from './utils/logger.js';

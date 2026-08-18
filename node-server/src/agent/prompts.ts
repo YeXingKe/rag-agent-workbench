@@ -1,3 +1,11 @@
+/**
+ * Agent 系统提示词。
+ *
+ * 约束 RAG Agent 的工具调用、引用格式与禁止编造行为，
+ * 与 Python 端 prompts 语义保持一致。
+ */
+
+/** RAG Agent 系统提示词：何时检索、如何引用、禁止幻觉。 */
 export const RAG_AGENT_SYSTEM_PROMPT = `
 你是一个面向知识库问答的 RAG Agent。
 

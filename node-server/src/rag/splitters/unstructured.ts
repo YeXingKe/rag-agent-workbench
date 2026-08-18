@@ -1,9 +1,23 @@
+/**
+ * 非结构化文本切分器。
+ *
+ * RAG 管道中的兜底策略：不依赖标题/字段结构，
+ * 按分隔符优先级在 chunk_size 附近截断，并保留 overlap。
+ */
+
 import { DEFAULT_CHUNK_OVERLAP, DEFAULT_CHUNK_SIZE, DEFAULT_SEPARATORS } from '../constants.js';
 import { cleanText } from '../../utils/text.js';
 import type { SplitChunk } from './types.js';
 
 export type { SplitChunk } from './types.js';
 
+/**
+ * 在目标长度附近寻找最合适的截断点。
+ *
+ * 逻辑优先级：
+ * 1. 在 chunk_size 范围内从后往前找高优先级分隔符；
+ * 2. 找不到则直接在固定长度处截断，保证算法稳定。
+ */
 export function findSplitPosition(text: string, chunkSize: number, separators: string[]): number {
   if (text.length <= chunkSize) {
     return text.length;
@@ -19,6 +33,14 @@ export function findSplitPosition(text: string, chunkSize: number, separators: s
   return chunkSize;
 }
 
+/**
+ * 按最基础的非结构化文本策略切分内容。
+ *
+ * 该实现故意保持简单可靠：
+ * - 足够适合第一版 RAG；
+ * - 不依赖额外复杂库；
+ * - 能保留 overlap 以降低跨 chunk 语义断裂问题。
+ */
 export function splitUnstructuredText(
   text: string,
   options: {
@@ -61,6 +83,7 @@ export function splitUnstructuredText(
       break;
     }
 
+    // 回退 overlap，让相邻 chunk 有重叠上下文
     startOffset = Math.max(0, endOffset - chunkOverlap);
   }
 

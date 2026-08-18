@@ -1,3 +1,10 @@
+/**
+ * 混合检索器（向量 + BM25 + RRF 融合）。
+ *
+ * RAG 查询路径的核心：并行拉向量与词法候选，用 Reciprocal Rank Fusion
+ * 合并排序；两侧皆空时回退 Postgres ILIKE。
+ */
+
 import type { Queryable } from '../core/postgres.js';
 import { getVectorStore } from '../core/milvus.js';
 import { searchChunksIlike } from '../models/chunk.js';
@@ -6,10 +13,14 @@ import { createLogger } from '../utils/logger.js';
 
 const logger = createLogger('rag.retriever');
 
+/** RRF 常数 k，常用取值 60。score = 1 / (k + rank)。 */
 const RRF_K = 60;
+/** 相对 top_k 扩大候选池的倍数。 */
 const CANDIDATE_MULTIPLIER = 4;
+/** 候选池下限，避免 top_k 很小时融合样本过少。 */
 const MIN_CANDIDATE_K = 10;
 
+/** 对外统一的检索命中结构（含各路分数与排序字段）。 */
 export type RetrievalHit = Record<string, unknown> & {
   chunk_id?: unknown;
   document_id?: unknown;
@@ -36,6 +47,7 @@ export type RetrievalHit = Record<string, unknown> & {
   end_offset?: unknown;
 };
 
+/** 日志预览：只取前 3 条，避免刷屏。 */
 function previewHits(hits: RetrievalHit[], scoreField = 'score'): Array<Record<string, unknown>> {
   return hits.slice(0, 3).map((item) => ({
     chunk_id: item.chunk_id,
@@ -46,14 +58,20 @@ function previewHits(hits: RetrievalHit[], scoreField = 'score'): Array<Record<s
   }));
 }
 
+/** 计算融合前每路检索应取的候选数量。 */
 function candidateK(topK: number): number {
   return Math.max(topK * CANDIDATE_MULTIPLIER, MIN_CANDIDATE_K);
 }
 
+/**
+ * Reciprocal Rank Fusion 单项贡献。
+ * 只依赖排名、不依赖原始分数尺度，便于融合异构检索器。
+ */
 function rrfScore(rank: number): number {
   return 1.0 / (RRF_K + rank);
 }
 
+/** Milvus 向量相似度检索；失败时返回空列表，不阻断混合链路。 */
 async function vectorRetrieveChunks(query: string, requestedCandidateK: number): Promise<RetrievalHit[]> {
   try {
     const vectorStore = getVectorStore();
@@ -104,6 +122,7 @@ async function vectorRetrieveChunks(query: string, requestedCandidateK: number):
   }
 }
 
+/** BM25 词法检索；失败时返回空列表。 */
 async function bm25RetrieveChunks(query: string, requestedCandidateK: number): Promise<RetrievalHit[]> {
   try {
     const hits = (await getBm25Index().search(query, {
@@ -127,6 +146,14 @@ function isEmptyValue(value: unknown): boolean {
   return value === null || value === undefined || value === '' || (Array.isArray(value) && value.length === 0);
 }
 
+/**
+ * RRF 融合向量与 BM25 命中。
+ *
+ * 1. 按 chunk_id 合并，累加 1/(k+rank)；
+ * 2. 补齐各路分数与排名字段；
+ * 3. 按 fused → bm25 → vector 排序后截断 topK；
+ * 4. 多源命中标记为 hybrid，单源保留原 score。
+ */
 function fuseHits(
   query: string,
   vectorHits: RetrievalHit[],
@@ -173,6 +200,7 @@ function fuseHits(
         fusedHit.rank_bm25 = rank;
       }
 
+      // 用非空字段补全合并后的元数据，避免某一路缺字段
       for (const [fieldName, value] of Object.entries(hit)) {
         if (fieldName === 'retrieval_sources' || fieldName === 'retrieval_source') {
           continue;
@@ -231,6 +259,7 @@ function fuseHits(
   return fusedHits;
 }
 
+/** 混合检索全空时的 Postgres 模糊匹配兜底。 */
 async function postgresFallback(db: Queryable, query: string, topK: number): Promise<RetrievalHit[]> {
   const chunks = await searchChunksIlike(db, query, topK);
   const fallbackHits: RetrievalHit[] = chunks.map((chunk) => ({
@@ -261,6 +290,11 @@ async function postgresFallback(db: Queryable, query: string, topK: number): Pro
   return fallbackHits;
 }
 
+/**
+ * 混合检索入口。
+ *
+ * 流程：并行向量 + BM25 → RRF 融合 → 无结果时 Postgres ILIKE。
+ */
 export async function retrieveChunks(
   db: Queryable,
   options: { query: string; top_k?: number },

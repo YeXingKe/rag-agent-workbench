@@ -1,12 +1,21 @@
+/**
+ * Agent 短期记忆（Checkpointer）。
+ *
+ * Node 端使用进程内 Map 按 thread_id 保存消息历史，
+ * 支撑多轮对话；进程重启后记忆会丢失（适合本地开发与演示）。
+ */
+
 import type { BaseMessage } from '@langchain/core/messages';
 
 import { logger } from '../utils/logger.js';
 
 type ThreadId = string;
 
+/** thread_id → 可持久化消息列表 */
 const threadMemory = new Map<ThreadId, BaseMessage[]>();
 let initialized = false;
 
+/** 内存版 checkpointer 接口（兼容 snake_case / camelCase 删除方法）。 */
 export interface InMemoryCheckpointer {
   get(threadId: string): BaseMessage[];
   set(threadId: string, messages: BaseMessage[]): void;
@@ -16,6 +25,10 @@ export interface InMemoryCheckpointer {
 
 let checkpointer: InMemoryCheckpointer | null = null;
 
+/**
+ * 初始化并缓存内存 checkpointer。
+ * 设计策略：保证本地开发和最小演示链路始终可用。
+ */
 export function initializeCheckpointer(): InMemoryCheckpointer {
   if (checkpointer != null && initialized) {
     return checkpointer;
@@ -42,10 +55,15 @@ export function initializeCheckpointer(): InMemoryCheckpointer {
   return checkpointer;
 }
 
+/** 获取 checkpointer 单例（未初始化时自动初始化）。 */
 export function getCheckpointer(): InMemoryCheckpointer {
   return initializeCheckpointer();
 }
 
+/**
+ * 清空指定 thread 的短期记忆。
+ * @returns 是否成功调用删除接口
+ */
 export function clearThreadMemory(threadId: string): boolean {
   const current = getCheckpointer();
   const deleteThread = current.delete_thread ?? current.deleteThread;
@@ -57,6 +75,7 @@ export function clearThreadMemory(threadId: string): boolean {
   return true;
 }
 
+/** 关闭并清空所有记忆状态（测试或优雅退出时调用）。 */
 export function shutdownCheckpointer(): void {
   threadMemory.clear();
   checkpointer = null;

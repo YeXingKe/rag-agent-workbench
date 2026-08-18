@@ -1,9 +1,16 @@
+/**
+ * DashScope 兼容 Chat Completions 客户端
+ *
+ * 提供非流式 / 流式对话，以及带 tools 的完整 completion 结果；
+ * getLlm() 返回统一调用门面，供 Agent 与业务层复用。
+ */
 import { getSettings } from '../config/settings.js';
 
 const CHAT_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions';
 
 export type ChatRole = 'system' | 'user' | 'assistant' | 'tool';
 
+/** OpenAI 兼容的 tool_call 结构。 */
 export interface ChatToolCall {
   id: string;
   type?: string;
@@ -14,6 +21,7 @@ export interface ChatToolCall {
   };
 }
 
+/** 单条对话消息（可含 tool_calls / tool_call_id）。 */
 export interface ChatMessage {
   role: ChatRole;
   content: string | null;
@@ -29,12 +37,14 @@ export interface ChatOptions {
   tools?: unknown[];
 }
 
+/** 非流式一次完整回复（含 tool_calls 与 finish_reason）。 */
 export interface ChatCompletionResult {
   content: string;
   tool_calls: ChatToolCall[];
   finish_reason: string | null;
 }
 
+/** 流式增量片段。 */
 export interface ChatStreamDelta {
   content?: string;
   tool_calls?: ChatToolCall[];
@@ -56,6 +66,11 @@ interface ChatCompletionResponse {
   error?: { message?: string; code?: string };
 }
 
+/**
+ * 向 DashScope 发起 chat completions 请求。
+ *
+ * @param stream 是否启用 SSE 流式输出
+ */
 async function postChat(
   messages: ChatMessage[],
   options: ChatOptions,
@@ -93,6 +108,9 @@ async function postChat(
   return response;
 }
 
+/**
+ * 非流式 chat completion，返回完整 content / tool_calls。
+ */
 export async function chatCompletion(
   messages: ChatMessage[],
   options: ChatOptions = {},
@@ -110,11 +128,16 @@ export async function chatCompletion(
   };
 }
 
+/** 非流式对话，仅返回文本 content。 */
 export async function chat(messages: ChatMessage[], options: ChatOptions = {}): Promise<string> {
   const result = await chatCompletion(messages, options);
   return result.content;
 }
 
+/**
+ * 流式 chat completion：解析 SSE `data:` 行并 yield 增量 delta。
+ * 遇到 `[DONE]` 结束生成器。
+ */
 export async function* streamChatCompletion(
   messages: ChatMessage[],
   options: ChatOptions = {},
@@ -134,6 +157,7 @@ export async function* streamChatCompletion(
       break;
     }
     buffer += decoder.decode(value, { stream: true });
+    // 按行拆分；最后一段可能不完整，留在 buffer 等待下次拼接
     const lines = buffer.split('\n');
     buffer = lines.pop() ?? '';
 
@@ -161,6 +185,7 @@ export async function* streamChatCompletion(
   }
 }
 
+/** 流式对话，仅 yield 文本增量。 */
 export async function* streamChat(
   messages: ChatMessage[],
   options: ChatOptions = {},
@@ -172,6 +197,11 @@ export async function* streamChat(
   }
 }
 
+/**
+ * 构造 LLM 调用门面（固定 temperature 等选项）。
+ *
+ * 同时暴露纯文本与完整 completion / 流式接口。
+ */
 export function getLlm(options: ChatOptions = {}) {
   const temperature = options.temperature ?? 0.1;
   return {

@@ -1,3 +1,9 @@
+/**
+ * Chunk API 路由。
+ *
+ * 提供片段列表、详情、删除与人工编辑接口；业务逻辑委托 ChunkService。
+ */
+
 import { Router } from 'express';
 import { z, ZodError } from 'zod';
 
@@ -7,11 +13,13 @@ import { ChunkService } from '../services/chunk_service.js';
 
 const router: Router = Router();
 
+/** 列表查询参数：可选按文档过滤，limit 默认 100。 */
 const listQuerySchema = z.object({
   document_id: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(500).default(100),
 });
 
+/** 将 Zod 错误转成接近 FastAPI 的 detail 结构。 */
 function zodDetail(error: ZodError, loc: string, input: unknown) {
   return {
     detail: error.issues.map((issue) => ({
@@ -23,6 +31,10 @@ function zodDetail(error: ZodError, loc: string, input: unknown) {
   };
 }
 
+/**
+ * GET /chunks
+ * 返回 chunk 列表；可按 document_id 过滤。
+ */
 router.get('/', async (req, res, next) => {
   try {
     const parsed = listQuerySchema.safeParse(req.query);
@@ -44,6 +56,10 @@ router.get('/', async (req, res, next) => {
   }
 });
 
+/**
+ * GET /chunks/:chunk_id
+ * 返回单个 chunk 详情。
+ */
 router.get('/:chunk_id', async (req, res, next) => {
   try {
     const chunk = await withSession(async (db) => {
@@ -60,6 +76,10 @@ router.get('/:chunk_id', async (req, res, next) => {
   }
 });
 
+/**
+ * DELETE /chunks/:chunk_id
+ * 删除 chunk（含向量与 BM25 脏标记）；成功返回 204。
+ */
 router.delete('/:chunk_id', async (req, res, next) => {
   try {
     const deleted = await withSession(async (db) => {
@@ -76,6 +96,10 @@ router.delete('/:chunk_id', async (req, res, next) => {
   }
 });
 
+/**
+ * PATCH /chunks/:chunk_id
+ * 编辑 chunk 正文 / 启用状态 / 元数据；正文变更会同步向量。
+ */
 router.patch('/:chunk_id', async (req, res, next) => {
   try {
     const parsed = chunkUpdateRequestSchema.safeParse(req.body ?? {});

@@ -1,3 +1,13 @@
+/**
+ * 文档 OCR 服务。
+ *
+ * 在 RAG 加载阶段作为增强能力：
+ * 1. 对 PDF / DOCX 做启发式判断，决定是否值得走 OCR；
+ * 2. 命中后调用外部文档解析服务，把结果转成 Markdown。
+ *
+ * 设计原则：OCR 非强依赖；调用失败时由 loader 回退原生解析。
+ */
+
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
@@ -22,6 +32,14 @@ interface PdfPageData {
 
 const pdfParse = require('pdf-parse/lib/pdf-parse.js') as PdfParseFn;
 
+/**
+ * OCR 决策结果。
+ *
+ * 把「是否走 OCR」抽象成对象而不是布尔值，便于：
+ * - 把判断原因落日志；
+ * - 透传到文档 / section metadata；
+ * - 前端调试「为什么这次走了 OCR」。
+ */
 export class OCRDetectionDecision {
   shouldUseOcr: boolean;
   fileType: string;
@@ -52,6 +70,7 @@ export class OCRDetectionDecision {
     this.totalBlockCount = input.totalBlockCount ?? 0;
   }
 
+  /** 把决策结果压平成可落 metadata 的结构。 */
   toMetadata(): Record<string, unknown> {
     return {
       ocr_enabled: this.shouldUseOcr,
@@ -65,6 +84,11 @@ export class OCRDetectionDecision {
   }
 }
 
+/**
+ * 按页提取 PDF 文本层。
+ *
+ * 通过 pagerender 按 Y 坐标换行，尽量保留版面行结构。
+ */
 export async function extractPdfPages(filePath: string): Promise<{ pages: string[]; numpages: number; buffer: Buffer }> {
   const buffer = await fs.promises.readFile(filePath);
   const pages: string[] = [];
@@ -89,11 +113,16 @@ export async function extractPdfPages(filePath: string): Promise<{ pages: string
   return { pages: pages.length > 0 ? pages : result.text ? [result.text] : [], numpages: result.numpages, buffer };
 }
 
+/** 粗估 PDF 内嵌图片数量（扫描 /Subtype /Image）。 */
 function countPdfImages(buffer: Buffer): number {
   const matches = buffer.toString('latin1').match(/\/Subtype\s*\/Image/g);
   return matches?.length ?? 0;
 }
 
+/**
+ * 统计「像表格」的行数。
+ * 启发：含 | / Tab，或有多列空格对齐。
+ */
 function countTableLikeLines(text: string): number {
   let count = 0;
   for (const line of text.split('\n')) {
@@ -110,6 +139,7 @@ function countTableLikeLines(text: string): number {
   return count;
 }
 
+/** 解析 OCR access_token：优先配置直出，否则 client_credentials 换取。 */
 async function resolveOcrAccessToken(): Promise<string | null> {
   const settings = getSettings();
   if (settings.ocrAccessToken) {
@@ -174,9 +204,17 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
+/**
+ * 文档 OCR 服务。
+ *
+ * 当前职责：
+ * 1. analyzeDocument：启发式判断是否建议 OCR；
+ * 2. parseToMarkdown：创建任务 → 轮询 → 下载 Markdown。
+ */
 export class OCRService {
   static readonly SUPPORTED_FILE_TYPES = new Set(['pdf', 'doc', 'docx']);
 
+  /** 判断当前环境是否具备 OCR 调用条件。 */
   canUseOcr(): boolean {
     const currentSettings = getSettings();
     return Boolean(
@@ -187,6 +225,7 @@ export class OCRService {
     );
   }
 
+  /** 判断是否具备 OCR 鉴权材料。 */
   private hasAuthMaterial(): boolean {
     const currentSettings = getSettings();
     return Boolean(
@@ -194,6 +233,12 @@ export class OCRService {
     );
   }
 
+  /**
+   * 根据文件内容判断是否建议走 OCR。
+   *
+   * 未配置 / 不支持类型 → 直接 false；
+   * 旧版 .doc → 强制建议 OCR。
+   */
   async analyzeDocument(filePath: string): Promise<OCRDetectionDecision> {
     const fileType = path.extname(filePath).toLowerCase().replace(/^\./, '');
     if (!this.canUseOcr() || !OCRService.SUPPORTED_FILE_TYPES.has(fileType)) {
@@ -212,6 +257,9 @@ export class OCRService {
     });
   }
 
+  /**
+   * 调用外部 OCR：上传文件 → 轮询任务 → 下载 Markdown。
+   */
   async parseToMarkdown(filePath: string): Promise<string> {
     if (!fs.existsSync(filePath)) {
       throw new Error(`File not found: ${filePath}`);
@@ -235,6 +283,12 @@ export class OCRService {
     return cleanedMarkdown;
   }
 
+  /**
+   * PDF OCR 决策启发：
+   * - 全页/大部分页文本过少；
+   * - 有图且平均文本密度低；
+   * - 表格式排版行数超阈值。
+   */
   private async analyzePdf(filePath: string): Promise<OCRDetectionDecision> {
     const settings = getSettings();
     const { pages, numpages, buffer } = await extractPdfPages(filePath);
@@ -280,6 +334,9 @@ export class OCRService {
     });
   }
 
+  /**
+   * DOCX OCR 决策启发：含图片、含表格、或纯文本字数过低。
+   */
   private async analyzeDocx(filePath: string): Promise<OCRDetectionDecision> {
     const settings = getSettings();
     const [htmlResult, textResult] = await Promise.all([
@@ -332,6 +389,7 @@ export class OCRService {
     return response;
   }
 
+  /** 轮询 OCR 任务直到 success / failed / 超时。 */
   private async pollMarkdownUrl(taskId: string): Promise<string> {
     const currentSettings = getSettings();
     const accessToken = await resolveOcrAccessToken();
@@ -359,6 +417,7 @@ export class OCRService {
   }
 }
 
+/** 便捷函数：当前环境是否可调用 OCR。 */
 export function canUseOcr(): boolean {
   return new OCRService().canUseOcr();
 }

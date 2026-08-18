@@ -1,3 +1,9 @@
+/**
+ * Express 应用工厂
+ *
+ * 装配 CORS、JSON 解析、耗时中间件、API 路由，以及统一错误处理
+ *（含 StorageError / multer 超限等）。
+ */
 import cors from 'cors';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import multer from 'multer';
@@ -8,6 +14,9 @@ import { timingMiddleware } from './middleware/timing.js';
 import { logger } from './utils/logger.js';
 import { StorageError } from './utils/storage.js';
 
+/**
+ * 创建并配置 Express 应用实例（不监听端口）。
+ */
 export function createApp(): Express {
   const settings = getSettings();
   const app = express();
@@ -24,6 +33,7 @@ export function createApp(): Express {
   app.use(timingMiddleware);
   app.use(settings.apiPrefix || '/api', apiRouter);
 
+  // 统一错误处理：已写出响应则交给默认 handler
   app.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {
     if (res.headersSent) {
       next(error);

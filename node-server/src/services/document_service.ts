@@ -1,3 +1,10 @@
+/**
+ * 文档业务服务。
+ *
+ * 编排文档入库、列表、详情、重建索引与删除；
+ * 切分/向量写入细节委托给 rag/ingest，BM25 脏标记在入库变更后触发。
+ */
+
 import { unlink } from 'node:fs/promises';
 
 import type { Queryable } from '../core/postgres.js';
@@ -13,9 +20,11 @@ import { getBm25Index } from '../rag/bm25_index.js';
 import { SPLITTER_REGISTRY } from '../rag/splitters/index.js';
 import { logger } from '../utils/logger.js';
 
+/** 文档相关业务编排。 */
 export class DocumentService {
   constructor(private readonly db: Queryable) {}
 
+  /** 校验用户显式指定的切分策略是否合法。 */
   private validateSplitterName(preferredSplitter: string | null | undefined): void {
     if (preferredSplitter != null && !(preferredSplitter in SPLITTER_REGISTRY)) {
       const availableNames = Object.keys(SPLITTER_REGISTRY).join(', ');
@@ -23,6 +32,13 @@ export class DocumentService {
     }
   }
 
+  /**
+   * 通过纯文本写入文档、切分 chunk，并同步建立向量索引。
+   * @param params.filename 展示用文件名（也用于类型推断）
+   * @param params.content 文档正文
+   * @param params.knowledgeBase 目标知识库，默认 default
+   * @param params.preferredSplitter 可选切分策略名
+   */
   async ingestText(params: {
     filename: string;
     content: string;
@@ -59,6 +75,9 @@ export class DocumentService {
     return document;
   }
 
+  /**
+   * 从已保存的本地文件创建文档并完成解析、切分与向量入库。
+   */
   async ingestFile(params: {
     filePath: string;
     originalFilename: string;
@@ -98,14 +117,20 @@ export class DocumentService {
     return document;
   }
 
+  /** 返回文档列表。 */
   async listDocuments(): Promise<DocumentRow[]> {
     return listDocuments(this.db);
   }
 
+  /** 按 ID 获取文档详情；不存在返回 null。 */
   async getDocument(documentId: string): Promise<DocumentRow | null> {
     return getDocumentById(this.db, documentId);
   }
 
+  /**
+   * 重建指定文档的 chunk 与向量索引。
+   * 可强制指定 preferredSplitter；不传则由入库逻辑自动判断。
+   */
   async rebuildIndex(
     documentId: string,
     params: { preferredSplitter?: string | null } = {},
@@ -139,6 +164,7 @@ export class DocumentService {
     return rebuiltDocument;
   }
 
+  /** 返回当前支持的切分策略列表及中文说明。 */
   listSplitterOptions(): Array<{ name: string; description: string }> {
     const descriptions: Record<string, string> = {
       structured: '适合字段说明、配置项、DDL、参数列表等强结构化内容',
@@ -151,6 +177,10 @@ export class DocumentService {
     }));
   }
 
+  /**
+   * 删除文档：清理向量与 chunk、尝试删除本地源文件，再删文档行。
+   * @returns 是否删除成功（文档不存在时为 false）
+   */
   async deleteDocument(documentId: string): Promise<boolean> {
     const document = await this.getDocument(documentId);
     if (document == null) {

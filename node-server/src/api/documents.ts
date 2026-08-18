@@ -1,3 +1,9 @@
+/**
+ * 文档 API 路由。
+ *
+ * 文本入库、文件上传、列表/详情、切分策略选项、按文档查 chunk、重建索引与删除。
+ */
+
 import { Router } from 'express';
 import multer from 'multer';
 import { ZodError } from 'zod';
@@ -16,6 +22,7 @@ import { saveUploadFile, StorageError } from '../utils/storage.js';
 
 const router: Router = Router();
 const settings = getSettings();
+/** 内存暂存上传文件，大小上限取自配置 maxUploadSizeMb。 */
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
@@ -23,6 +30,7 @@ const upload = multer({
   },
 });
 
+/** 是否为客户端可预期的参数错误（应返回 400）。 */
 function isClientValueError(error: unknown): error is Error {
   return (
     error instanceof Error &&
@@ -30,6 +38,7 @@ function isClientValueError(error: unknown): error is Error {
   );
 }
 
+/** 将 Zod 错误转成接近 FastAPI 的 detail 结构。 */
 function zodDetail(error: ZodError, input: unknown) {
   return {
     detail: error.issues.map((issue) => ({
@@ -41,11 +50,16 @@ function zodDetail(error: ZodError, input: unknown) {
   };
 }
 
+/** 将 multer 内存文件落盘到 uploads 目录。 */
 async function persistUpload(file: Express.Multer.File): Promise<{ storedPath: string; fileSize: number }> {
   const saved = await saveUploadFile(file);
   return { storedPath: saved.path, fileSize: saved.size };
 }
 
+/**
+ * POST /documents/ingest-text
+ * 通过纯文本快速创建文档并完成切分入库。
+ */
 router.post('/ingest-text', async (req, res, next) => {
   try {
     const parsed = documentCreateRequestSchema.safeParse(req.body);
@@ -77,6 +91,10 @@ router.post('/ingest-text', async (req, res, next) => {
   }
 });
 
+/**
+ * POST /documents/upload
+ * 上传文件并完成解析、切分与向量入库（multipart：file / knowledge_base / preferred_splitter）。
+ */
 router.post('/upload', upload.single('file'), async (req, res, next) => {
   let storedPath: string | null = null;
   try {
@@ -133,6 +151,10 @@ router.post('/upload', upload.single('file'), async (req, res, next) => {
   }
 });
 
+/**
+ * GET /documents
+ * 返回文档列表。
+ */
 router.get('/', async (_req, res, next) => {
   try {
     const documents = await withSession(async (db) => {
@@ -145,6 +167,10 @@ router.get('/', async (_req, res, next) => {
   }
 });
 
+/**
+ * GET /documents/splitters/options
+ * 返回当前支持的切分策略列表。
+ */
 router.get('/splitters/options', async (_req, res, next) => {
   try {
     const options = await withSession(async (db) => {
@@ -157,6 +183,10 @@ router.get('/splitters/options', async (_req, res, next) => {
   }
 });
 
+/**
+ * GET /documents/:document_id
+ * 返回单个文档详情。
+ */
 router.get('/:document_id', async (req, res, next) => {
   try {
     const document = await withSession(async (db) => {
@@ -173,6 +203,10 @@ router.get('/:document_id', async (req, res, next) => {
   }
 });
 
+/**
+ * DELETE /documents/:document_id
+ * 删除文档及其 chunk / 向量 / 本地源文件；成功返回 204。
+ */
 router.delete('/:document_id', async (req, res, next) => {
   try {
     const deleted = await withSession(async (db) => {
@@ -189,6 +223,10 @@ router.delete('/:document_id', async (req, res, next) => {
   }
 });
 
+/**
+ * GET /documents/:document_id/chunks
+ * 返回指定文档下的全部 chunk（上限 1000）。
+ */
 router.get('/:document_id/chunks', async (req, res, next) => {
   try {
     const chunks = await withSession(async (db) => {
@@ -209,6 +247,10 @@ router.get('/:document_id/chunks', async (req, res, next) => {
   }
 });
 
+/**
+ * POST /documents/:document_id/rebuild-index
+ * 重建该文档的 chunk 与向量索引。
+ */
 router.post('/:document_id/rebuild-index', async (req, res, next) => { // FastAPI: POST /documents/{id}/rebuild-index
   try {
     const parsed = documentRebuildRequestSchema.safeParse(req.body ?? {});

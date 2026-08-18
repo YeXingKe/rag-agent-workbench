@@ -1,3 +1,9 @@
+/**
+ * Milvus 向量库封装
+ *
+ * 负责集合创建/加载、文本入库（embedding + insert）、
+ * 余弦相似度检索，以及按 id 删除。
+ */
 import { randomUUID } from 'node:crypto';
 
 import { DataType, MilvusClient } from '@zilliz/milvus2-sdk-node';
@@ -5,18 +11,22 @@ import { DataType, MilvusClient } from '@zilliz/milvus2-sdk-node';
 import { getSettings } from '../config/settings.js';
 import { getEmbeddings } from './embeddings.js';
 
+/** 检索返回的文档结构（内容 + 元数据）。 */
 export interface VectorDocument {
   pageContent: string;
   metadata: Record<string, unknown>;
 }
 
 let milvusClient: MilvusClient | null = null;
+/** 本进程内已确保存在并加载的集合名，避免重复 ensure。 */
 const ensuredCollections = new Set<string>();
 
+/** SDK address 不需要协议前缀，去掉 http(s)://。 */
 function toMilvusAddress(uri: string): string {
   return uri.replace(/^https?:\/\//i, '');
 }
 
+/** 获取 MilvusClient 单例。 */
 export function getMilvusClient(): MilvusClient {
   if (milvusClient) {
     return milvusClient;
@@ -28,6 +38,12 @@ export function getMilvusClient(): MilvusClient {
   return milvusClient;
 }
 
+/**
+ * 确保集合存在并已加载。
+ *
+ * - 不存在则按 schema（id/vector/text/metadata）创建，向量索引为 COSINE AUTOINDEX
+ * - load 失败时补建索引再加载
+ */
 export async function ensureCollection(collectionName?: string): Promise<string> {
   const settings = getSettings();
   const name = collectionName || settings.milvusCollection;
@@ -77,6 +93,7 @@ export async function ensureCollection(collectionName?: string): Promise<string>
   try {
     await client.loadCollectionSync({ collection_name: name });
   } catch {
+    // 旧集合可能缺索引：补建后再 load
     await client.createIndex({
       collection_name: name,
       field_name: 'vector',
@@ -93,6 +110,7 @@ export async function ensureCollection(collectionName?: string): Promise<string>
   return name;
 }
 
+/** Milvus VarChar 文本字段上限裁剪，避免超长写入失败。 */
 function truncateText(text: string, maxLength = 65_535): string {
   if (text.length <= maxLength) {
     return text;
@@ -100,6 +118,11 @@ function truncateText(text: string, maxLength = 65_535): string {
   return text.slice(0, maxLength);
 }
 
+/**
+ * 文本向量化后写入 Milvus。
+ *
+ * @returns 与 texts 一一对应的主键 id 列表（无连字符 UUID）
+ */
 export async function addTexts(
   texts: string[],
   metadatas: Record<string, unknown>[] = [],
@@ -126,10 +149,16 @@ export async function addTexts(
     collection_name: name,
     data,
   });
+  // flush 保证后续检索可见
   await client.flushSync({ collection_names: [name] });
   return ids;
 }
 
+/**
+ * 余弦相似度检索，返回 [文档, score] 列表。
+ *
+ * score 为 Milvus 返回的相似度分值（COSINE）。
+ */
 export async function similaritySearchWithScore(
   query: string,
   k: number,
@@ -165,6 +194,7 @@ export async function similaritySearchWithScore(
   });
 }
 
+/** 按主键 id 批量删除向量记录。 */
 export async function deleteByIds(ids: string[], collectionName?: string): Promise<void> {
   if (ids.length === 0) {
     return;
@@ -177,6 +207,10 @@ export async function deleteByIds(ids: string[], collectionName?: string): Promi
   });
 }
 
+/**
+ * 绑定到指定集合的向量库门面（add / search / delete）。
+ * 未传 collectionName 时使用配置默认集合。
+ */
 export function getVectorStore(collectionName?: string) {
   return {
     async addTexts(texts: string[], metadatas: Record<string, unknown>[] = []): Promise<string[]> {

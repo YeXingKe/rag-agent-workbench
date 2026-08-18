@@ -1,12 +1,29 @@
+/**
+ * BM25 词法检索索引。
+ *
+ * 在 RAG 混合检索中负责「关键词 / 文件名 / 标题」侧召回，
+ * 与向量检索结果经 RRF 融合。索引惰性重建，chunk 变更时 markDirty。
+ */
+
 import { createLogger } from '../utils/logger.js';
 import { getSessionFactory } from '../core/postgres.js';
 import { listEnabledChunks, type ChunkRow } from '../models/chunk.js';
 
 const logger = createLogger('rag.bm25_index');
 
+/** 英文/数字及常见标识符 token。 */
 const LATIN_TOKEN_PATTERN = /[a-z0-9][a-z0-9._:/-]*/g;
+/** 连续中日韩汉字片段。 */
 const CJK_SEGMENT_PATTERN = /[\u4e00-\u9fff]+/g;
 
+/**
+ * 将文本切成适合 BM25 的 token 列表。
+ *
+ * 策略：
+ * - 英文/数字按正则拆分；
+ * - 中文按 2-gram + 单字混合切分，保证基础召回能力。
+ * （Python 版可选用 jieba；Node 版目前走稳定的 n-gram 回退。）
+ */
 export function tokenizeForBm25(text: string): string[] {
   const normalizedText = String(text || '').trim().toLowerCase();
   if (!normalizedText) {
@@ -28,6 +45,7 @@ export function tokenizeForBm25(text: string): string[] {
       tokens.push(segment);
       continue;
     }
+    // 2-gram：提升短语命中；单字：兜底短词召回
     for (let index = 0; index < segment.length - 1; index += 1) {
       tokens.push(segment.slice(index, index + 2));
     }
@@ -37,6 +55,12 @@ export function tokenizeForBm25(text: string): string[] {
   return tokens.filter((token) => token.length > 0);
 }
 
+/**
+ * 拼装参与 BM25 的词法文本。
+ *
+ * 通过对文件名和标题做重复拼接，给它们更高的词法权重，
+ * 让「按文件名/章节名搜文档」的召回更稳。
+ */
 function buildLexicalDocument(chunk: ChunkRow): string {
   const metadata = chunk.metadata_json || {};
   const filename = String(metadata.filename || '').trim();
@@ -59,7 +83,9 @@ function buildLexicalDocument(chunk: ChunkRow): string {
 }
 
 /**
- * BM25Okapi matching Python `rank_bm25.BM25Okapi` (k1=1.5, b=0.75, epsilon=0.25).
+ * BM25Okapi，参数对齐 Python `rank_bm25.BM25Okapi`（k1=1.5, b=0.75, epsilon=0.25）。
+ *
+ * 负 IDF 词用 epsilon * 平均 IDF 钳制，避免极常见词产生负贡献。
  */
 export class BM25Okapi {
   private readonly k1: number;
@@ -115,6 +141,7 @@ export class BM25Okapi {
     }
   }
 
+  /** 对查询 token 列表计算语料中每篇文档的 BM25 分数。 */
   getScores(query: string[]): number[] {
     const scores = new Array<number>(this.corpusSize).fill(0);
     for (const term of query) {
@@ -133,6 +160,7 @@ export class BM25Okapi {
   }
 }
 
+/** BM25 检索命中记录（含溯源元数据与可选分数字段）。 */
 export interface Bm25Record {
   chunk_id: string;
   document_id: string;
@@ -156,6 +184,7 @@ export interface Bm25Record {
   rank_bm25?: number;
 }
 
+/** 简易异步互斥锁，串行化索引读写，避免并发 rebuild 打架。 */
 class AsyncLock {
   private chain = Promise.resolve();
 
@@ -175,6 +204,13 @@ class AsyncLock {
   }
 }
 
+/**
+ * 进程内 BM25 索引管理器。
+ *
+ * - markDirty：文档/chunk 变更后标记需重建；
+ * - ensureReady / rebuild：从 Postgres 拉启用 chunk 重建语料；
+ * - search：返回带分数与排序的候选命中。
+ */
 export class BM25IndexManager {
   private readonly lock = new AsyncLock();
   private dirty = true;
@@ -183,12 +219,14 @@ export class BM25IndexManager {
   private rebuildCount = 0;
   private lastDirtyReason = 'initial';
 
+  /** 标记索引过期；下次查询前会触发 rebuild。 */
   markDirty(reason: string): void {
     this.dirty = true;
     this.lastDirtyReason = reason;
     logger.info('[BM25] index marked dirty: reason=%s', reason);
   }
 
+  /** 若索引脏或尚未构建，则重建。 */
   async ensureReady(): Promise<void> {
     const needsRebuild = await this.lock.run(() => this.dirty || this.bm25 === null);
     if (needsRebuild) {
@@ -196,6 +234,7 @@ export class BM25IndexManager {
     }
   }
 
+  /** 从数据库全量重建 BM25 语料与记录表。 */
   async rebuild(): Promise<void> {
     const factory = getSessionFactory();
     const chunks = await factory.withClient(async (db) => listEnabledChunks(db));
@@ -261,6 +300,11 @@ export class BM25IndexManager {
     );
   }
 
+  /**
+   * 词法检索。
+   *
+   * candidate_k 默认取 max(top_k, top_k*4)，为混合融合预留更多候选。
+   */
   async search(query: string, options: { top_k?: number; candidate_k?: number | null } = {}): Promise<Bm25Record[]> {
     const topK = options.top_k ?? 5;
     const candidateK = options.candidate_k;
@@ -327,6 +371,7 @@ export class BM25IndexManager {
 
 let cachedIndex: BM25IndexManager | null = null;
 
+/** 获取进程内单例 BM25 索引管理器。 */
 export function getBm25Index(): BM25IndexManager {
   if (!cachedIndex) {
     cachedIndex = new BM25IndexManager();
