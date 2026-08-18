@@ -1,0 +1,38 @@
+{
+  "name": "rag-agent-workbench-node-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts",
+    "build": "tsc -p tsconfig.json",
+    "init-db": "tsx src/init-db.ts"
+  },
+  "dependencies": {
+    "@langchain/core": "^0.3.66",
+    "@zilliz/milvus2-sdk-node": "^2.5.12",
+    "chardet": "^2.1.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.5.0",
+    "express": "^4.21.2",
+    "iconv-lite": "^0.6.3",
+    "ioredis": "^5.6.1",
+    "mammoth": "^1.9.0",
+    "multer": "^1.4.5-lts.2",
+    "pdf-parse": "^1.1.1",
+    "pg": "^8.16.0",
+    "uuid": "^11.1.0",
+    "zod": "^3.25.67"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.18",
+    "@types/express": "^4.17.22",
+    "@types/multer": "^1.4.12",
+    "@types/node": "^22.15.29",
+    "@types/pdf-parse": "^1.1.5",
+    "@types/pg": "^8.15.4",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3"
+  }
+}
