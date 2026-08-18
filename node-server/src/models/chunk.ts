@@ -7,21 +7,45 @@ import { randomUUID } from 'node:crypto';
 
 import type { Queryable } from '../core/postgres.js';
 
-/** chunk 表一行的 TypeScript 映射。 */
+/**
+ * chunk 表一行的 TypeScript 映射。
+ *
+ * 支撑切分可视化与答案溯源：
+ * - content：切分正文
+ * - metadata_json：页码、标题、切分策略等扩展信息
+ * - vector_id：向量库主键，便于反查与重建索引
+ */
 export interface ChunkRow {
+  /** Chunk 主键（UUID），便于跨表引用与溯源编号 */
   id: string;
+  /** 所属文档 ID（外键 document.id，级联删除） */
   document_id: string;
+  /** 在同一文档中的顺序编号，从 0 开始 */
   chunk_index: number;
+  /** 切分后的正文内容 */
   content: string;
+  /**
+   * 扩展元数据（JSONB），常见键包括：
+   * filename / file_type / parser_name / splitter_name /
+   * section_type / section_title / page_number / source_path /
+   * knowledge_base / chunk_id / vector_id / manual_edited 等
+   */
   metadata_json: Record<string, unknown>;
+  /** 预估 token 数量（当前实现多为 len/4 近似） */
   token_count: number;
+  /** 来源页码，适用于 PDF 等分页文档；无页码时为 null */
   page_number: number | null;
+  /** 在原文（或 section）中的起始字符偏移 */
   start_offset: number | null;
+  /** 在原文（或 section）中的结束字符偏移 */
   end_offset: number | null;
-  /** 对应 Milvus 主键；未入库时为 null。 */
+  /** Milvus 中对应向量记录 ID；尚未向量化时为 null */
   vector_id: string | null;
+  /** 是否参与检索；false 可人工排除脏数据且不删库 */
   enabled: boolean;
+  /** 创建时间（带时区） */
   created_at: Date;
+  /** 最后更新时间（带时区） */
   updated_at: Date;
 }
 
@@ -31,19 +55,19 @@ export interface ChunkRow {
  */
 export const CREATE_CHUNK_TABLE_SQL = `
 CREATE TABLE IF NOT EXISTS chunk (
-  id VARCHAR(36) PRIMARY KEY,
-  document_id VARCHAR(36) NOT NULL REFERENCES document(id) ON DELETE CASCADE,
-  chunk_index INTEGER NOT NULL,
-  content TEXT NOT NULL,
-  metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-  token_count INTEGER NOT NULL DEFAULT 0,
-  page_number INTEGER,
-  start_offset INTEGER,
-  end_offset INTEGER,
-  vector_id VARCHAR(128),
-  enabled BOOLEAN NOT NULL DEFAULT TRUE,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  id VARCHAR(36) PRIMARY KEY,                                      -- Chunk 主键 UUID
+  document_id VARCHAR(36) NOT NULL REFERENCES document(id) ON DELETE CASCADE, -- 所属文档 ID
+  chunk_index INTEGER NOT NULL,                                    -- 文档内顺序号
+  content TEXT NOT NULL,                                           -- 切分正文
+  metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,                -- 扩展元数据
+  token_count INTEGER NOT NULL DEFAULT 0,                          -- 预估 token 数
+  page_number INTEGER,                                             -- 来源页码
+  start_offset INTEGER,                                            -- 原文起始偏移
+  end_offset INTEGER,                                              -- 原文结束偏移
+  vector_id VARCHAR(128),                                          -- Milvus 向量 ID
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,                           -- 是否参与检索
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),                   -- 创建时间
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()                    -- 更新时间
 )
 `;
 
@@ -96,16 +120,27 @@ export function mapChunk(row: Record<string, unknown>): ChunkRow {
 
 /** 插入分块时的入参；缺省 id 时自动生成 UUID。 */
 export interface ChunkInsertInput {
+  /** 可选主键；不传则自动生成 UUID */
   id?: string;
+  /** 所属文档 ID */
   document_id: string;
+  /** 文档内顺序编号（从 0 起） */
   chunk_index: number;
+  /** 切分正文 */
   content: string;
+  /** 扩展元数据，默认 {} */
   metadata_json?: Record<string, unknown>;
+  /** 预估 token 数，默认 0 */
   token_count?: number;
+  /** 来源页码 */
   page_number?: number | null;
+  /** 原文起始偏移 */
   start_offset?: number | null;
+  /** 原文结束偏移 */
   end_offset?: number | null;
+  /** Milvus 向量 ID；入库前通常为空 */
   vector_id?: string | null;
+  /** 是否参与检索，默认 true */
   enabled?: boolean;
 }
 

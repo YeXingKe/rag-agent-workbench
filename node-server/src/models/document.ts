@@ -7,35 +7,56 @@ import { randomUUID } from 'node:crypto';
 
 import type { Queryable } from '../core/postgres.js';
 
-/** document 表一行的 TypeScript 映射。 */
+/**
+ * document 表一行的 TypeScript 映射。
+ *
+ * 只存「文档级」元信息，不存切分正文；切分明细在 chunk 表。
+ */
 export interface DocumentRow {
+  /** 文档主键（UUID），便于跨服务引用与分布式扩展 */
   id: string;
+  /** 所属知识库名称，默认 default；后续可做多库隔离 */
   knowledge_base: string;
+  /** 原始文件名（上传时的展示名 / 类型推断依据） */
   filename: string;
+  /** 文件类型，例如 pdf / docx / md / txt / doc */
   file_type: string;
+  /** 服务器本地存储路径；纯文本入库时可为 null */
   source_path: string | null;
+  /** 文件大小，单位字节；未知时为 null */
   file_size: number | null;
+  /**
+   * 文档处理状态：
+   * - uploaded：已创建/已上传
+   * - parsed：已解析但未写入向量
+   * - indexed：已切分并完成向量入库
+   * - failed：处理失败
+   */
   status: string;
+  /** 当前文档已生成的 chunk 数量，便于管理页快速展示 */
   chunk_count: number;
+  /** 可选摘要或说明（如 parser=...; splitter=...） */
   summary: string | null;
+  /** 创建时间（带时区） */
   created_at: Date;
+  /** 最后更新时间（带时区） */
   updated_at: Date;
 }
 
 /** 创建 document 表的 DDL（幂等）。 */
 export const CREATE_DOCUMENT_TABLE_SQL = `
 CREATE TABLE IF NOT EXISTS document (
-  id VARCHAR(36) PRIMARY KEY,
-  knowledge_base VARCHAR(100) NOT NULL,
-  filename VARCHAR(255) NOT NULL,
-  file_type VARCHAR(32) NOT NULL,
-  source_path VARCHAR(500),
-  file_size BIGINT,
-  status VARCHAR(32) NOT NULL DEFAULT 'uploaded',
-  chunk_count INTEGER NOT NULL DEFAULT 0,
-  summary TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  id VARCHAR(36) PRIMARY KEY,                          -- 文档主键 UUID
+  knowledge_base VARCHAR(100) NOT NULL,                 -- 所属知识库名称
+  filename VARCHAR(255) NOT NULL,                       -- 原始文件名
+  file_type VARCHAR(32) NOT NULL,                       -- 文件类型 pdf/docx/md/txt 等
+  source_path VARCHAR(500),                            -- 本地存储路径
+  file_size BIGINT,                                    -- 文件大小（字节）
+  status VARCHAR(32) NOT NULL DEFAULT 'uploaded',       -- uploaded/parsed/indexed/failed
+  chunk_count INTEGER NOT NULL DEFAULT 0,              -- 已生成 chunk 数
+  summary TEXT,                                        -- 可选摘要/说明
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),       -- 创建时间
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()        -- 更新时间
 )
 `;
 
@@ -63,14 +84,23 @@ function mapDocument(row: Record<string, unknown>): DocumentRow {
 
 /** 插入文档时的入参；缺省 id 时自动生成 UUID。 */
 export interface DocumentInsertInput {
+  /** 可选主键；不传则自动生成 UUID */
   id?: string;
+  /** 所属知识库名称 */
   knowledge_base: string;
+  /** 原始文件名 */
   filename: string;
+  /** 文件类型，例如 pdf / docx / md / txt */
   file_type: string;
+  /** 本地存储路径 */
   source_path?: string | null;
+  /** 文件大小（字节） */
   file_size?: number | null;
+  /** 文档状态，默认 uploaded */
   status?: string;
+  /** chunk 数量，默认 0 */
   chunk_count?: number;
+  /** 可选摘要 */
   summary?: string | null;
 }
 

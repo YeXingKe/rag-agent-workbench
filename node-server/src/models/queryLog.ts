@@ -7,33 +7,51 @@ import { randomUUID } from 'node:crypto';
 
 import type { Queryable } from '../core/postgres.js';
 
-/** query_log 表一行的 TypeScript 映射。 */
+/**
+ * query_log 表一行的 TypeScript 映射。
+ *
+ * 用于问答审计、看板统计与链路排错；每次 invoke/stream 成功后写入一条。
+ */
 export interface QueryLogRow {
+  /** 查询日志主键（UUID） */
   id: string;
+  /** 会话 ID，用于串联多轮对话；匿名单次问答可为 null */
   session_id: string | null;
+  /** 用户原始问题 */
   user_question: string;
+  /** 系统最终回答；流式失败等场景可能为 null */
   answer: string | null;
-  /** 路由标签，如 rag / agent。 */
+  /**
+   * 命中的处理链路标签，例如：
+   * - rag / agent_rag：知识库 Agent 问答
+   * - sql / web：预留扩展
+   */
   route: string;
+  /** 本次处理耗时，单位毫秒 */
   latency_ms: number | null;
-  /** 引用的源分块摘要列表（JSONB）。 */
+  /**
+   * 回答引用到的 chunk 摘要列表（JSONB 数组）。
+   * 元素通常含 ref_id、chunk_id、filename、score、content 等溯源字段。
+   */
   source_chunks: unknown[];
+  /** 创建时间（带时区） */
   created_at: Date;
+  /** 最后更新时间（带时区） */
   updated_at: Date;
 }
 
 /** 创建 query_log 表的 DDL（幂等）。 */
 export const CREATE_QUERY_LOG_TABLE_SQL = `
 CREATE TABLE IF NOT EXISTS query_log (
-  id VARCHAR(36) PRIMARY KEY,
-  session_id VARCHAR(100),
-  user_question TEXT NOT NULL,
-  answer TEXT,
-  route VARCHAR(50) NOT NULL DEFAULT 'rag',
-  latency_ms INTEGER,
-  source_chunks JSONB NOT NULL DEFAULT '[]'::jsonb,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  id VARCHAR(36) PRIMARY KEY,                          -- 日志主键 UUID
+  session_id VARCHAR(100),                             -- 会话 ID（多轮串联）
+  user_question TEXT NOT NULL,                         -- 用户原始问题
+  answer TEXT,                                         -- 系统最终回答
+  route VARCHAR(50) NOT NULL DEFAULT 'rag',            -- 处理链路 rag/agent_rag 等
+  latency_ms INTEGER,                                  -- 耗时（毫秒）
+  source_chunks JSONB NOT NULL DEFAULT '[]'::jsonb,    -- 引用 chunk 摘要列表
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),       -- 创建时间
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()        -- 更新时间
 )
 `;
 
@@ -75,12 +93,19 @@ function mapQueryLog(row: Record<string, unknown>): QueryLogRow {
 
 /** 插入查询日志时的入参。 */
 export interface QueryLogInsertInput {
+  /** 可选主键；不传则自动生成 UUID */
   id?: string;
+  /** 会话 ID，用于多轮串联 */
   session_id?: string | null;
+  /** 用户原始问题 */
   user_question: string;
+  /** 系统最终回答 */
   answer?: string | null;
+  /** 处理链路标签，默认 rag */
   route?: string;
+  /** 耗时（毫秒） */
   latency_ms?: number | null;
+  /** 引用 chunk 摘要列表，默认 [] */
   source_chunks?: unknown[];
 }
 
