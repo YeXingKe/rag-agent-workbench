@@ -1,14 +1,14 @@
 /**
  * Express 应用工厂
  *
- * 装配 CORS、JSON 解析、耗时中间件、API 路由，以及统一错误处理
- *（含 StorageError / multer 超限等）。
+ * 装配 CORS、JSON 解析、耗时中间件、根路径 /health，以及 /api/v1 业务路由。
  */
 import cors from 'cors';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import multer from 'multer';
 
 import apiRouter from './api/index.js';
+import healthRouter from './api/health.js';
 import { getSettings } from './config/settings.js';
 import { timingMiddleware } from './middleware/timing.js';
 import { logger } from './utils/logger.js';
@@ -20,10 +20,13 @@ import { StorageError } from './utils/storage.js';
 export function createApp(): Express {
   const settings = getSettings();
   const app = express();
+  const apiPrefix = settings.apiV1Prefix || settings.apiPrefix || '/api/v1';
 
   app.use(
     cors({
-      origin: '*',
+      // 对齐参考 Python：使用配置中的 allowed_origins，而不是无条件 *
+      origin: settings.allowOrigins.length > 0 ? settings.allowOrigins : true,
+      credentials: true,
       methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
       allowedHeaders: ['*'],
     }),
@@ -31,9 +34,12 @@ export function createApp(): Express {
   app.use(express.json({ limit: '2mb' }));
   app.use(express.urlencoded({ extended: true }));
   app.use(timingMiddleware);
-  app.use(settings.apiPrefix || '/api', apiRouter);
 
-  // 统一错误处理：已写出响应则交给默认 handler
+  // 根路径健康检查（对齐 Python GET /health）
+  app.use(healthRouter);
+  // 业务 API（对齐 Python prefix=/api/v1）
+  app.use(apiPrefix, apiRouter);
+
   app.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {
     if (res.headersSent) {
       next(error);

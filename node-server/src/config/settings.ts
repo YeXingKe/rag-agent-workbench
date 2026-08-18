@@ -24,6 +24,9 @@ export interface Settings {
   appVersion: string;
   appEnv: string;
   debug: boolean;
+  /** 业务 API 前缀，对齐参考 Python 的 api_v1_prefix，默认 /api/v1 */
+  apiV1Prefix: string;
+  /** @deprecated 兼容旧名，等同 apiV1Prefix */
   apiPrefix: string;
   allowOrigins: string[];
   storageRoot: string;
@@ -145,8 +148,9 @@ function loadSettings(): Settings {
     appVersion: readEnv('APP_VERSION') ?? '0.1.0',
     appEnv: readEnv('APP_ENV') ?? 'development',
     debug: parseBool(readEnv('DEBUG'), false),
-    apiPrefix: readEnv('API_PREFIX') ?? '/api',
-    allowOrigins: parseAllowOrigins(readEnv('ALLOW_ORIGINS')),
+    apiV1Prefix: readEnv('API_V1_PREFIX') ?? readEnv('API_PREFIX') ?? '/api/v1',
+    apiPrefix: readEnv('API_V1_PREFIX') ?? readEnv('API_PREFIX') ?? '/api/v1',
+    allowOrigins: parseAllowOrigins(readEnv('ALLOW_ORIGINS') ?? readEnv('ALLOWED_ORIGINS')),
     storageRoot,
     uploadDirName,
     maxUploadSizeMb: parseIntValue(readEnv('MAX_UPLOAD_SIZE_MB'), 20),
