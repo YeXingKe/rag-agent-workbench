@@ -22,7 +22,7 @@ import { logger } from '../utils/logger.js';
 
 /** 文档相关业务编排。 */
 export class DocumentService {
-  constructor(private readonly db: Queryable) {}
+  constructor(private readonly db: Queryable) { }
 
   /** 校验用户显式指定的切分策略是否合法。 */
   private validateSplitterName(preferredSplitter: string | null | undefined): void {
@@ -34,10 +34,20 @@ export class DocumentService {
 
   /**
    * 通过纯文本写入文档、切分 chunk，并同步建立向量索引。
-   * @param params.filename 展示用文件名（也用于类型推断）
-   * @param params.content 文档正文
+   *
+   * 编排职责（本方法不直接碰 Postgres/Milvus 细节）：
+   * 1. 归一化 knowledgeBase / preferredSplitter
+   * 2. 校验切分策略名是否在 SPLITTER_REGISTRY 中
+   * 3. 委托 rag/ingest.ingestTextDocument 完成清洗 → LoadedDocument → 入库
+   * 4. 标记 BM25 索引脏，触发后续词法检索重建
+   *
+   * 典型调用：API POST /documents/ingest-text，外层用 withSession 包裹事务。
+   *
+   * @param params.filename 展示用文件名（也用于类型推断，如 .md / .txt）
+   * @param params.content 文档正文（空内容会在 ingestTextDocument 内抛错）
    * @param params.knowledgeBase 目标知识库，默认 default
-   * @param params.preferredSplitter 可选切分策略名
+   * @param params.preferredSplitter 可选切分策略名；null/undefined 表示自动推断
+   * @returns 入库后的 Document 行（含 status / chunk_count / summary）
    */
   async ingestText(params: {
     filename: string;
@@ -45,8 +55,11 @@ export class DocumentService {
     knowledgeBase?: string;
     preferredSplitter?: string | null;
   }): Promise<DocumentRow> {
+    // 未指定知识库时落入默认库，便于多库隔离前的兼容行为
     const knowledgeBase = params.knowledgeBase ?? 'default';
+    // null = 由 ingest 流水线按 section/file_type 自动选 splitter
     const preferredSplitter = params.preferredSplitter ?? null;
+    // 非法策略名尽早失败，避免进入昂贵的切分/向量化流程
     this.validateSplitterName(preferredSplitter);
     logger.info(
       '[DOC] ingest_text: filename=%s knowledge_base=%s preferred_splitter=%s content_chars=%s',
@@ -56,6 +69,8 @@ export class DocumentService {
       params.content.length,
     );
 
+    // 核心入库：cleanText → buildLoadedDocumentFromText → ingestLoadedDocument
+    // this.db 通常是 withSession 借出的事务连接，保证 document/chunk 原子写入
     const document = await ingestTextDocument(this.db, {
       filename: params.filename,
       content: params.content,
@@ -63,6 +78,7 @@ export class DocumentService {
       preferredSplitter,
     });
 
+    // 文档内容变更后，内存 BM25 索引失效；markDirty 供下次检索前懒重建
     getBm25Index().markDirty(`document_ingested:${document.id}`);
     logger.info(
       '[DOC] ingest_text done: document_id=%s filename=%s status=%s chunk_count=%s summary=%s',

@@ -128,13 +128,31 @@ export async function deleteChunkVectors(chunks: ChunkRow[]): Promise<void> {
 }
 
 /**
- * 核心入库流程。
+ * 核心入库流程：把已解析的 LoadedDocument 写入 Postgres + Milvus。
  *
- * 1. 创建或更新 Document 行；
- * 2. 逐 section 选 splitter 切分；
- * 3. 批量插入 Chunk；
- * 4. 写入向量并回填 vector_id；
- * 5. 更新文档 chunk_count / status。
+ * 调用链入口：
+ * - ingestTextDocument（纯文本）
+ * - ingestFileDocument（上传文件）
+ * - rebuildDocumentChunks（重建索引，传入 existingDocument）
+ *
+ * 流水线步骤：
+ * 1. 创建或更新 Document 行（status=uploaded）
+ * 2. 逐 section 选 splitter 切成 chunk 候选
+ * 3. 批量 insertChunks 写入 Postgres
+ * 4. 向量化写入 Milvus，并回填 chunk.vector_id
+ * 5. 更新文档 chunk_count / status（indexed 或 parsed）
+ *
+ * 注意：Postgres 事务由调用方 withSession 包裹；Milvus 写入不在同一事务内，
+ * 向量失败时可能出现「PG 有 chunk、向量缺失」的中间态。
+ *
+ * @param db 可执行 query 的对象（Pool 或事务内的 PoolClient）
+ * @param options.loadedDocument loader 产出的统一文档（filename / parser / sections）
+ * @param options.knowledgeBase 知识库名，默认 default
+ * @param options.sourcePath 本地源文件路径；纯文本入库时为 null
+ * @param options.fileSize 文件字节数，便于管理页展示
+ * @param options.preferredSplitter 强制切分策略；null 则按 section 启发式自动选
+ * @param options.existingDocument 重建场景下复用已有文档行，避免新建 UUID
+ * @returns 最终落库后的 Document 行（含 status / chunk_count / summary）
  */
 export async function ingestLoadedDocument(
   db: Queryable,
@@ -147,10 +165,12 @@ export async function ingestLoadedDocument(
     existingDocument?: DocumentRow | null;
   },
 ): Promise<DocumentRow> {
+  // ---------- 参数归一化 ----------
   const loadedDocument = options.loadedDocument;
   const knowledgeBase = options.knowledgeBase ?? 'default';
   const sourcePath = options.sourcePath ?? null;
   const fileSize = options.fileSize ?? null;
+  // null = 自动推断；非空则优先使用用户指定策略
   const preferredSplitter = options.preferredSplitter ?? null;
 
   logger.info(
@@ -164,11 +184,14 @@ export async function ingestLoadedDocument(
     sourcePath || '',
   );
 
+  // ---------- 步骤 1：确保 Document 行存在 ----------
+  // 首次入库 → insert；重建索引 → 更新已有行并重置为 uploaded
   let document: DocumentRow;
   if (!options.existingDocument) {
     document = await insertDocument(db, {
       knowledge_base: knowledgeBase,
       filename: loadedDocument.filename,
+      // 以原始文件名扩展名推断类型（pdf/docx/md/txt…）
       file_type: inferFileType(loadedDocument.filename),
       source_path: sourcePath,
       file_size: fileSize,
@@ -176,6 +199,7 @@ export async function ingestLoadedDocument(
       summary: `parser=${loadedDocument.parser_name}`,
     });
   } else {
+    // 重建路径：复用同一 document.id，避免前端引用失效
     document = options.existingDocument;
     document.knowledge_base = knowledgeBase;
     document.filename = loadedDocument.filename;
@@ -187,12 +211,18 @@ export async function ingestLoadedDocument(
     document = await saveDocument(db, document);
   }
 
+  // ---------- 步骤 2：按 section 切分，组装待插入的 chunk 列表 ----------
+  // chunkInputs：尚未落库的插入载荷
   const chunkInputs = [];
+  // 跨 section 的全局序号，保证同一文档内 chunk_index 连续唯一
   let globalChunkIndex = 0;
+  // 记录每个 section 选用的 splitter，写入完成日志便于排查切分策略
   const sectionSplitterSummary: Array<Record<string, unknown>> = [];
 
   for (const [sectionPositionZero, section] of loadedDocument.sections.entries()) {
+    // 日志用 1-based 编号，与人读习惯一致
     const sectionPosition = sectionPositionZero + 1;
+    // 按 section 类型 / 文件类型 / 用户偏好选择 structured | semi_structured | unstructured
     const [splitterName, splitChunks] = splitSection({
       text: section.text,
       fileType: document.file_type,
@@ -220,7 +250,9 @@ export async function ingestLoadedDocument(
       section.metadata.ocr_used ?? false,
     );
 
+    // 将本 section 切出的每个片段转成 Postgres chunk 插入行
     for (const splitChunk of splitChunks) {
+      // 溯源元数据：document_id、页码、splitter、parser 等，供检索命中后展示来源
       const metadata = buildChunkMetadata({
         document,
         knowledgeBase,
@@ -236,8 +268,10 @@ export async function ingestLoadedDocument(
         chunk_index: globalChunkIndex,
         content: splitChunk.content,
         metadata_json: metadata,
+        // 粗估 token，便于后续截断 / 计费 / 展示
         token_count: estimateTokenCount(splitChunk.content),
         page_number: pageNumberRaw == null ? null : Number(pageNumberRaw),
+        // 相对原 section 文本的字符偏移，便于高亮定位
         start_offset: splitChunk.start_offset,
         end_offset: splitChunk.end_offset,
       });
@@ -245,22 +279,29 @@ export async function ingestLoadedDocument(
     }
   }
 
+  // ---------- 步骤 3：批量写入 Postgres chunk 表 ----------
   const chunkModels = await insertChunks(db, chunkInputs);
 
+  // ---------- 步骤 4：向量化并回填 vector_id ----------
+  // 有 chunk 才写 Milvus；空文档（无有效文本）跳过向量步骤
   if (chunkModels.length > 0) {
     const vectorStore = getVectorStore();
     const texts = chunkModels.map((chunk) => chunk.content);
+    // 写入向量时补上真实 chunk_id（插入前 metadata 里为 null）
     const metadatas = chunkModels.map((chunk) => {
       const metadata = { ...chunk.metadata_json };
       metadata.chunk_id = chunk.id;
       return metadata;
     });
+    // 批量 embedding + 写入向量库，返回与 texts 对齐的 vector id 列表
     const vectorIds = await vectorStore.addTexts(texts, metadatas);
+    // 防御性取交集长度，避免两侧数量不一致时越界
     const pairCount = Math.min(chunkModels.length, vectorIds.length);
     for (let index = 0; index < pairCount; index += 1) {
       const chunk = chunkModels[index];
       const vectorId = String(vectorIds[index]);
       chunk.vector_id = vectorId;
+      // 同步把 vector_id / chunk_id 写入 metadata_json，检索侧可直接读元数据
       chunk.metadata_json = {
         ...chunk.metadata_json,
         chunk_id: chunk.id,
@@ -270,7 +311,9 @@ export async function ingestLoadedDocument(
     }
   }
 
+  // ---------- 步骤 5：回写文档统计与终态 ----------
   document.chunk_count = chunkModels.length;
+  // 有 chunk → indexed（可检索）；无 chunk → parsed（已解析但无可检索片段）
   document.status = chunkModels.length > 0 ? 'indexed' : 'parsed';
   document.summary = `parser=${loadedDocument.parser_name}; splitter=${preferredSplitter || 'auto'}`;
   document = await saveDocument(db, document);

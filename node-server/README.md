@@ -4,6 +4,8 @@
 
 HTTP 路径、状态码与 JSON 形状与参考服务一致；前端默认请求 `http://localhost:8000/api/v1`。
 
+> **新手入门**：见 [docs/小白学习指南.md](./docs/小白学习指南.md)（概念、目录、两条主航线、学习路径与 FAQ）。
+
 ## Tech stack
 
 - Express 4
