@@ -6,7 +6,7 @@
 
 import { Router, type Request, type Response } from 'express';
 
-import { getMilvusClient } from '../core/milvus.js';
+import { probeMilvusHealth } from '../core/milvus.js';
 import { getPool } from '../core/postgres.js';
 import { getRedisClient } from '../core/redis.js';
 import type { HealthResponse, ServiceHealthItem } from '../schemas/common.js';
@@ -49,9 +49,9 @@ export async function buildHealthResponse(): Promise<HealthResponse> {
   }
 
   try {
-    const client = getMilvusClient();
-    await client.listCollections();
-    milvusOk = true;
+    const result = await probeMilvusHealth();
+    milvusOk = result.ok;
+    milvusError = result.error;
   } catch (error) {
     milvusError = error instanceof Error ? error.message : String(error);
   }

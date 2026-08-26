@@ -7,7 +7,6 @@
 
 import { initializeCheckpointer } from './agent/memory.js';
 import { getSettings } from './config/settings.js';
-import { getMilvusClient, ensureCollection } from './core/milvus.js';
 import { getPool } from './core/postgres.js';
 import { getRedisClient } from './core/redis.js';
 import { initTables } from './models/index.js';
@@ -24,7 +23,7 @@ import { logger } from './utils/logger.js';
  * 会做的事：
  * 1. 初始化 Postgres 连接池，并幂等创建 document / chunk / query_log 表
  * 2. 确保上传目录存在（storage/uploads）
- * 3. 懒创建 Redis / Milvus 客户端对象，并尽量保证 Milvus collection 已就绪
+ * 3. 懒创建 Redis 客户端对象（Milvus 在首次入库/检索时再连接）
  * 4. 初始化 BM25 索引管理器（内存词法检索）
  * 5. 初始化 Agent 短期记忆 checkpointer（当前为进程内 Map）
  *
@@ -52,14 +51,6 @@ export async function warmUpSingletons(): Promise<void> {
     getRedisClient();
   } catch (error) {
     logger.warn(`Redis client warm-up skipped: ${error instanceof Error ? error.message : String(error)}`);
-  }
-
-  try {
-    // Milvus：向量库客户端 + 确保 collection / 索引存在
-    getMilvusClient();
-    await ensureCollection();
-  } catch (error) {
-    logger.warn(`Milvus warm-up skipped: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   try {

@@ -13,6 +13,16 @@ import { configureLogging, logger } from './utils/logger.js';
 
 configureLogging();
 
+// Milvus SDK 在连接失败时可能产生额外的未处理 rejection，避免因此拖垮整个进程。
+process.on('unhandledRejection', (reason) => {
+  const message = reason instanceof Error ? reason.message : String(reason);
+  if (message.includes('ECONNREFUSED') && message.includes('19530')) {
+    logger.warn(`Milvus is unavailable: ${message}`);
+    return;
+  }
+  logger.error(`Unhandled promise rejection: ${message}`);
+});
+
 const settings = getSettings();
 const host = settings.appHost || '0.0.0.0';
 const port = Number(settings.appPort || 8000);
@@ -32,6 +42,18 @@ async function main(): Promise<void> {
     logger.info(`listening on http://${host}:${port}`);
     logger.info(`API prefix: ${apiPrefix}`);
     logger.info(`Health: GET http://${host === '0.0.0.0' ? 'localhost' : host}:${port}/health`);
+  });
+
+  server.on('error', (error: NodeJS.ErrnoException) => {
+    if (error.code === 'EADDRINUSE') {
+      logger.error(
+        `Port ${port} is already in use. Stop the existing process or change APP_PORT in .env.`,
+      );
+      process.exit(1);
+      return;
+    }
+    logger.error(`Failed to start server: ${error.message}`);
+    process.exit(1);
   });
 
   const shutdown = async (signal: string) => {

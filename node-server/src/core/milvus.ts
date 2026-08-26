@@ -5,6 +5,7 @@
  * 余弦相似度检索，以及按 id 删除。
  */
 import { randomUUID } from 'node:crypto';
+import net from 'node:net';
 
 import { DataType, MilvusClient } from '@zilliz/milvus2-sdk-node';
 
@@ -24,6 +25,64 @@ const ensuredCollections = new Set<string>();
 /** SDK address 不需要协议前缀，去掉 http(s)://。 */
 function toMilvusAddress(uri: string): string {
   return uri.replace(/^https?:\/\//i, '');
+}
+
+/** 将 Milvus SDK / gRPC 错误转成可读文案，便于日志与健康检查展示。 */
+function formatMilvusError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error);
+}
+
+/** 清空已缓存的 Milvus 客户端，连接失败后便于下次重连。 */
+export function resetMilvusClient(): void {
+  milvusClient = null;
+}
+
+/**
+ * 通过 TCP 探测 Milvus 端口是否可达。
+ *
+ * 健康检查使用此方式，避免 Milvus SDK 在连接失败时抛出未捕获的 gRPC rejection。
+ */
+export async function checkMilvusReachable(timeoutMs = 2_000): Promise<boolean> {
+  const settings = getSettings();
+  const host = settings.milvusHost || '127.0.0.1';
+  const port = settings.milvusPort || 19_530;
+
+  return new Promise((resolve) => {
+    const socket = new net.Socket();
+    let settled = false;
+
+    const finish = (result: boolean) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(result);
+    };
+
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    socket.once('connect', () => finish(true));
+    socket.once('error', () => finish(false));
+    socket.connect(port, host);
+  });
+}
+
+/** 供 /health 使用的轻量探活，不触发 Milvus SDK。 */
+export async function probeMilvusHealth(): Promise<{ ok: boolean; error: string | null }> {
+  const settings = getSettings();
+  const reachable = await checkMilvusReachable();
+  if (!reachable) {
+    resetMilvusClient();
+    return {
+      ok: false,
+      error: `Milvus is not reachable at ${settings.resolvedMilvusUri}`,
+    };
+  }
+  return { ok: true, error: null };
 }
 
 /** 获取 MilvusClient 单例。 */
@@ -52,7 +111,13 @@ export async function ensureCollection(collectionName?: string): Promise<string>
   }
 
   const client = getMilvusClient();
-  const existing = await client.hasCollection({ collection_name: name });
+  let existing;
+  try {
+    existing = await client.hasCollection({ collection_name: name });
+  } catch (error) {
+    resetMilvusClient();
+    throw new Error(`Milvus unavailable: ${formatMilvusError(error)}`);
+  }
   if (!existing.value) {
     await client.createCollection({
       collection_name: name,
