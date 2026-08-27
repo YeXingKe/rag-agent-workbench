@@ -4,7 +4,7 @@
  * 负责片段列表/详情查询、人工编辑后的向量同步，以及删除时清理 Milvus 与 BM25 索引标记。
  */
 
-import { addTexts, deleteByIds } from '../core/milvus.js';
+import { addTexts, checkMilvusReachable, deleteByIds } from '../core/milvus.js';
 import type { Queryable } from '../core/postgres.js';
 import { getChunkById, mapChunk, type ChunkRow } from '../models/chunk.js';
 import { getBm25Index } from '../rag/bm25_index.js';
@@ -77,14 +77,6 @@ export class ChunkService {
       }
 
       if (normalizedContent !== chunk.content) {
-        if (chunk.vector_id) {
-          try {
-            await deleteByIds([chunk.vector_id]);
-          } catch {
-            // 向量删除失败不阻止文本更新，后续可通过重建索引重新清理。
-          }
-        }
-
         content = normalizedContent;
         tokenCount = estimateTokenCount(normalizedContent);
         const updatedMetadata = {
@@ -96,12 +88,32 @@ export class ChunkService {
           end_offset: chunk.end_offset,
           manual_edited: true,
         };
-        const vectorIds = await addTexts([content], [updatedMetadata]);
-        vectorId = String(vectorIds[0]);
-        metadata = {
-          ...updatedMetadata,
-          vector_id: vectorId,
-        };
+
+        const milvusReady = await checkMilvusReachable();
+        if (milvusReady) {
+          if (chunk.vector_id) {
+            try {
+              await deleteByIds([chunk.vector_id]);
+            } catch {
+              // 向量删除失败不阻止文本更新，后续可通过重建索引重新清理。
+            }
+          }
+
+          try {
+            const vectorIds = await addTexts([content], [updatedMetadata]);
+            vectorId = String(vectorIds[0]);
+            metadata = {
+              ...updatedMetadata,
+              vector_id: vectorId,
+            };
+          } catch {
+            vectorId = null;
+            metadata = updatedMetadata;
+          }
+        } else {
+          vectorId = null;
+          metadata = updatedMetadata;
+        }
       } else if (metadataChanged) {
         metadata = {
           ...metadata,

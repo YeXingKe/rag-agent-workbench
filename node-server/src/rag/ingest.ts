@@ -2,13 +2,13 @@
  * 文档入库（ingest）流水线。
  *
  * RAG 写入路径：LoadedDocument → 选 splitter 切 chunk → 写 Postgres →
- * 向量化写入 Milvus → 更新文档状态。也支持纯文本入库与重建。
+ * （可选）向量化写入 Milvus → 更新文档状态。Milvus 不可用时降级为仅 Postgres + BM25。
  */
 
 import path from 'node:path';
 
 import type { Queryable } from '../core/postgres.js';
-import { getVectorStore } from '../core/milvus.js';
+import { getVectorStore, checkMilvusReachable } from '../core/milvus.js';
 import {
   deleteChunksByDocumentId,
   insertChunks,
@@ -283,39 +283,59 @@ export async function ingestLoadedDocument(
   const chunkModels = await insertChunks(db, chunkInputs);
 
   // ---------- 步骤 4：向量化并回填 vector_id ----------
-  // 有 chunk 才写 Milvus；空文档（无有效文本）跳过向量步骤
+  // 有 chunk 才写 Milvus；Milvus 不可用时降级为仅保留 Postgres + BM25
+  let vectorsIndexed = false;
   if (chunkModels.length > 0) {
-    const vectorStore = getVectorStore();
-    const texts = chunkModels.map((chunk) => chunk.content);
-    // 写入向量时补上真实 chunk_id（插入前 metadata 里为 null）
-    const metadatas = chunkModels.map((chunk) => {
-      const metadata = { ...chunk.metadata_json };
-      metadata.chunk_id = chunk.id;
-      return metadata;
-    });
-    // 批量 embedding + 写入向量库，返回与 texts 对齐的 vector id 列表
-    const vectorIds = await vectorStore.addTexts(texts, metadatas);
-    // 防御性取交集长度，避免两侧数量不一致时越界
-    const pairCount = Math.min(chunkModels.length, vectorIds.length);
-    for (let index = 0; index < pairCount; index += 1) {
-      const chunk = chunkModels[index];
-      const vectorId = String(vectorIds[index]);
-      chunk.vector_id = vectorId;
-      // 同步把 vector_id / chunk_id 写入 metadata_json，检索侧可直接读元数据
-      chunk.metadata_json = {
-        ...chunk.metadata_json,
-        chunk_id: chunk.id,
-        vector_id: vectorId,
-      };
-      await updateChunkVector(db, chunk.id, vectorId, chunk.metadata_json);
+    const milvusReady = await checkMilvusReachable();
+    if (!milvusReady) {
+      logger.warn(
+        '[INGEST] Milvus unavailable; skipping vector indexing for document_id=%s file=%s',
+        document.id,
+        loadedDocument.filename,
+      );
+    } else {
+      try {
+        const vectorStore = getVectorStore();
+        const texts = chunkModels.map((chunk) => chunk.content);
+        // 写入向量时补上真实 chunk_id（插入前 metadata 里为 null）
+        const metadatas = chunkModels.map((chunk) => {
+          const metadata = { ...chunk.metadata_json };
+          metadata.chunk_id = chunk.id;
+          return metadata;
+        });
+        // 批量 embedding + 写入向量库，返回与 texts 对齐的 vector id 列表
+        const vectorIds = await vectorStore.addTexts(texts, metadatas);
+        // 防御性取交集长度，避免两侧数量不一致时越界
+        const pairCount = Math.min(chunkModels.length, vectorIds.length);
+        for (let index = 0; index < pairCount; index += 1) {
+          const chunk = chunkModels[index];
+          const vectorId = String(vectorIds[index]);
+          chunk.vector_id = vectorId;
+          // 同步把 vector_id / chunk_id 写入 metadata_json，检索侧可直接读元数据
+          chunk.metadata_json = {
+            ...chunk.metadata_json,
+            chunk_id: chunk.id,
+            vector_id: vectorId,
+          };
+          await updateChunkVector(db, chunk.id, vectorId, chunk.metadata_json);
+        }
+        vectorsIndexed = pairCount > 0;
+      } catch (error) {
+        logger.warn(
+          '[INGEST] Milvus vector indexing failed; continuing with Postgres-only chunks: document_id=%s error=%s',
+          document.id,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
     }
   }
 
   // ---------- 步骤 5：回写文档统计与终态 ----------
   document.chunk_count = chunkModels.length;
-  // 有 chunk → indexed（可检索）；无 chunk → parsed（已解析但无可检索片段）
-  document.status = chunkModels.length > 0 ? 'indexed' : 'parsed';
-  document.summary = `parser=${loadedDocument.parser_name}; splitter=${preferredSplitter || 'auto'}`;
+  // indexed：已向量化；parsed：仅有 chunk（Milvus 不可用或向量写入失败）
+  document.status = chunkModels.length > 0 && vectorsIndexed ? 'indexed' : 'parsed';
+  const milvusNote = chunkModels.length > 0 && !vectorsIndexed ? '; milvus=skipped' : '';
+  document.summary = `parser=${loadedDocument.parser_name}; splitter=${preferredSplitter || 'auto'}${milvusNote}`;
   document = await saveDocument(db, document);
 
   logger.info(

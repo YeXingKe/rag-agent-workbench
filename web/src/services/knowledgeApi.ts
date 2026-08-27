@@ -1,22 +1,99 @@
 import api from './api'
-import { ApiResponse, Document } from '../types'
+
+export interface DocumentItem {
+    id: string
+    knowledge_base: string
+    filename: string
+    file_type: string
+    source_path?: string | null
+    file_size?: number | null
+    status: string
+    chunk_count: number
+    summary?: string | null
+    created_at: string
+    updated_at: string
+}
+
+export interface SplitterOption {
+    name: string
+    description: string
+}
+
+export interface DocumentMutationResponse {
+    document: DocumentItem
+    message: string
+}
 
 export const knowledgeApi = {
     /**
+     * 获取文档列表
+     */
+    listDocuments: async () => {
+        try {
+            return await api.get<DocumentItem[]>('/documents')
+        } catch (error) {
+            console.error('获取文档列表失败:', error)
+            throw error
+        }
+    },
+
+    /**
+     * 获取切分策略选项
+     */
+    getSplitterOptions: async () => {
+        try {
+            return await api.get<SplitterOption[]>('/documents/splitters/options')
+        } catch (error) {
+            console.error('获取切分策略失败:', error)
+            throw error
+        }
+    },
+
+    /**
      * 上传文档
      */
-    uploadDocument: async (file: File) => {
+    uploadDocument: async (
+        file: File,
+        options?: {
+            knowledgeBase?: string
+            preferredSplitter?: string | null
+        },
+    ) => {
         const formData = new FormData()
         formData.append('file', file)
 
+        if (options?.knowledgeBase?.trim()) {
+            formData.append('knowledge_base', options.knowledgeBase.trim())
+        }
+        if (options?.preferredSplitter?.trim()) {
+            formData.append('preferred_splitter', options.preferredSplitter.trim())
+        }
+
         try {
-            return await api.post<ApiResponse<Document>>('/documents/upload', formData, {
-                headers: {
-                    'Content-Type': 'multipart/form-data',
-                },
+            return await api.post<DocumentMutationResponse>('/documents/upload', formData, {
+                timeout: 180_000,
             })
         } catch (error) {
             console.error('上传文档失败:', error)
+            throw error
+        }
+    },
+
+    /**
+     * 纯文本入库
+     */
+    ingestText: async (payload: {
+        filename: string
+        content: string
+        knowledge_base?: string
+        preferred_splitter?: string | null
+    }) => {
+        try {
+            return await api.post<DocumentMutationResponse>('/documents/ingest-text', payload, {
+                timeout: 180_000,
+            })
+        } catch (error) {
+            console.error('文本入库失败:', error)
             throw error
         }
     },
@@ -26,7 +103,7 @@ export const knowledgeApi = {
      */
     getDocument: async (id: string) => {
         try {
-            return await api.get<ApiResponse<Document>>(`/documents/${id}`)
+            return await api.get<DocumentItem>(`/documents/${id}`)
         } catch (error) {
             console.error('获取文档详情失败:', error)
             throw error
@@ -38,7 +115,7 @@ export const knowledgeApi = {
      */
     deleteDocument: async (id: string) => {
         try {
-            return await api.delete<ApiResponse<void>>(`/documents/${id}`)
+            return await api.delete<void>(`/documents/${id}`)
         } catch (error) {
             console.error('删除文档失败:', error)
             throw error
@@ -62,7 +139,7 @@ export const knowledgeApi = {
      */
     reprocessDocument: async (id: string) => {
         try {
-            return await api.post<ApiResponse<void>>(`/documents/${id}/reprocess`)
+            return await api.post<void>(`/documents/${id}/reprocess`)
         } catch (error) {
             console.error('重新处理文档失败:', error)
             throw error

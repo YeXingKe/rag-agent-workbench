@@ -16,6 +16,10 @@ api.interceptors.request.use(
     if (token) {
       config.headers.Authorization = `Bearer ${token}`
     }
+    // FormData 必须由浏览器/axios 自动附带 boundary，手动写 multipart/form-data 会导致后端解析失败
+    if (config.data instanceof FormData) {
+      delete config.headers['Content-Type']
+    }
     return config
   },
   (error) => Promise.reject(error)

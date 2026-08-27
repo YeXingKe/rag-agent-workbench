@@ -1,3 +1,4 @@
+import { useCallback, useEffect, useRef, useState, type ChangeEvent, type DragEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import {
@@ -9,6 +10,12 @@ import {
   CheckCircle2,
 } from 'lucide-react'
 import MainLayout from '../components/layout/MainLayout'
+import {
+  knowledgeApi,
+  type DocumentItem,
+  type SplitterOption,
+} from '../services/knowledgeApi'
+import { formatDate, formatFileSize } from '../utils/formatters'
 
 const pipelineSteps = [
   '上传源文件',
@@ -17,8 +24,6 @@ const pipelineSteps = [
   '刷新验证',
 ]
 
-const chunkStrategies = ['自动识别', '按段落', '按标题', '固定长度']
-
 const tableHeaders = ['文件名', '进度', '状态', '类型', 'Chunks', '大小', '更新时间', '操作']
 
 const fieldClass =
@@ -26,10 +31,204 @@ const fieldClass =
 const labelClass = 'text-sm font-medium text-ink-soft'
 const cardClass = 'rounded-2xl border border-line bg-paper-raised p-5 sm:p-6'
 const ghostBtnClass =
-  'inline-flex items-center gap-2 rounded-xl border border-line bg-paper px-3.5 py-2 text-sm font-medium text-ink-soft transition-colors hover:border-accent/30 hover:text-ink'
-const primaryBtnClass = 'btn-primary'
+  'inline-flex items-center gap-2 rounded-xl border border-line bg-paper px-3.5 py-2 text-sm font-medium text-ink-soft transition-colors hover:border-accent/30 hover:text-ink disabled:cursor-not-allowed disabled:opacity-50'
+const primaryBtnClass = 'btn-primary disabled:cursor-not-allowed disabled:opacity-50'
+
+const ACCEPTED_FILE_TYPES = '.txt,.md,.pdf,.docx'
+
+function resolveErrorMessage(error: unknown, fallback: string): string {
+  if (typeof error === 'object' && error != null && 'response' in error) {
+    const response = (error as { response?: { data?: { detail?: unknown } } }).response
+    const detail = response?.data?.detail
+    if (typeof detail === 'string') {
+      return detail
+    }
+    if (Array.isArray(detail) && detail.length > 0) {
+      const first = detail[0] as { msg?: string }
+      if (typeof first?.msg === 'string') {
+        return first.msg
+      }
+    }
+  }
+  if (error instanceof Error && error.message) {
+    return error.message
+  }
+  return fallback
+}
+
+function formatStatus(status: string): string {
+  switch (status) {
+    case 'indexed':
+      return '已入库'
+    case 'parsed':
+      return '已解析'
+    case 'uploaded':
+      return '已上传'
+    case 'failed':
+      return '失败'
+    default:
+      return status
+  }
+}
 
 export default function UploadIngest() {
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const uploadingRef = useRef(false)
+
+  const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [isDragging, setIsDragging] = useState(false)
+  const [uploadKnowledgeBase, setUploadKnowledgeBase] = useState('default')
+  const [uploadSplitter, setUploadSplitter] = useState('')
+  const [splitterOptions, setSplitterOptions] = useState<SplitterOption[]>([])
+  const [uploading, setUploading] = useState(false)
+  const [ingestingText, setIngestingText] = useState(false)
+  const [loadingDocuments, setLoadingDocuments] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [successMessage, setSuccessMessage] = useState<string | null>(null)
+  const [recentDocuments, setRecentDocuments] = useState<DocumentItem[]>([])
+
+  const [textFilename, setTextFilename] = useState('')
+  const [textKnowledgeBase, setTextKnowledgeBase] = useState('default')
+  const [textSplitter, setTextSplitter] = useState('')
+  const [textContent, setTextContent] = useState('')
+
+  const loadSplitterOptions = useCallback(async () => {
+    try {
+      const options = await knowledgeApi.getSplitterOptions()
+      setSplitterOptions(options)
+    } catch (loadError) {
+      console.error(loadError)
+    }
+  }, [])
+
+  const loadDocuments = useCallback(async () => {
+    setLoadingDocuments(true)
+    try {
+      const documents = await knowledgeApi.listDocuments()
+      setRecentDocuments(documents.slice(0, 10))
+    } catch (loadError) {
+      setError(resolveErrorMessage(loadError, '加载最近入库结果失败'))
+    } finally {
+      setLoadingDocuments(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadSplitterOptions()
+    void loadDocuments()
+  }, [loadDocuments, loadSplitterOptions])
+
+  const openFileDialog = () => {
+    fileInputRef.current?.click()
+  }
+
+  const handleFileSelection = (file: File | undefined) => {
+    if (!file) {
+      return
+    }
+    setSelectedFile(file)
+    setError(null)
+    setSuccessMessage(null)
+  }
+
+  const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    handleFileSelection(event.target.files?.[0])
+    event.target.value = ''
+  }
+
+  const handleDragOver = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    setIsDragging(true)
+  }
+
+  const handleDragLeave = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    setIsDragging(false)
+  }
+
+  const handleDrop = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    setIsDragging(false)
+    handleFileSelection(event.dataTransfer.files?.[0])
+  }
+
+  const handleUpload = async () => {
+    if (uploadingRef.current) {
+      return
+    }
+
+    if (!selectedFile) {
+      setError('请先选择要上传的文件')
+      openFileDialog()
+      return
+    }
+
+    uploadingRef.current = true
+    setUploading(true)
+    setError(null)
+    setSuccessMessage(null)
+
+    try {
+      const response = await knowledgeApi.uploadDocument(selectedFile, {
+        knowledgeBase: uploadKnowledgeBase,
+        preferredSplitter: uploadSplitter || null,
+      })
+      setSuccessMessage(response.message || '文档上传并入库成功')
+      setSelectedFile(null)
+      await loadDocuments()
+    } catch (uploadError) {
+      setError(resolveErrorMessage(uploadError, '上传文档失败'))
+    } finally {
+      uploadingRef.current = false
+      setUploading(false)
+    }
+  }
+
+  const handleTextIngest = async () => {
+    if (!textFilename.trim()) {
+      setError('请填写文件名')
+      return
+    }
+    if (!textContent.trim()) {
+      setError('请填写正文内容')
+      return
+    }
+
+    setIngestingText(true)
+    setError(null)
+    setSuccessMessage(null)
+
+    try {
+      const response = await knowledgeApi.ingestText({
+        filename: textFilename.trim(),
+        content: textContent,
+        knowledge_base: textKnowledgeBase.trim() || 'default',
+        preferred_splitter: textSplitter || null,
+      })
+      setSuccessMessage(response.message || '文本入库成功')
+      setTextContent('')
+      await loadDocuments()
+    } catch (ingestError) {
+      setError(resolveErrorMessage(ingestError, '文本入库失败'))
+    } finally {
+      setIngestingText(false)
+    }
+  }
+
+  const handleCopyTextContent = async () => {
+    if (!textContent.trim()) {
+      setError('当前没有可复制的内容')
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(textContent)
+      setSuccessMessage('正文内容已复制到剪贴板')
+      setError(null)
+    } catch {
+      setError('复制失败，请手动选择文本复制')
+    }
+  }
+
   return (
     <MainLayout>
       <div className="flex min-h-full w-full flex-1 flex-col gap-4 lg:gap-5">
@@ -48,11 +247,31 @@ export default function UploadIngest() {
               知识导入
             </h1>
           </div>
-          <button type="button" className={ghostBtnClass}>
-            <RefreshCw size={15} />
+          <button
+            type="button"
+            className={ghostBtnClass}
+            onClick={() => {
+              void loadSplitterOptions()
+              void loadDocuments()
+            }}
+            disabled={loadingDocuments}
+          >
+            <RefreshCw size={15} className={loadingDocuments ? 'animate-spin' : ''} />
             刷新配置
           </button>
         </motion.div>
+
+        {(error || successMessage) && (
+          <div
+            className={`rounded-2xl border px-4 py-3 text-sm ${
+              error
+                ? 'border-red-300/60 bg-red-50 text-red-700'
+                : 'border-emerald-300/60 bg-emerald-50 text-emerald-700'
+            }`}
+          >
+            {error || successMessage}
+          </div>
+        )}
 
         {/* 流程说明横幅 */}
         <motion.section
@@ -74,7 +293,16 @@ export default function UploadIngest() {
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
-              <button type="button" className={ghostBtnClass}>
+              <button
+                type="button"
+                className={ghostBtnClass}
+                onClick={() => {
+                  setSelectedFile(null)
+                  setTextContent('')
+                  setError(null)
+                  setSuccessMessage(null)
+                }}
+              >
                 <Eraser size={15} />
                 清理数据
               </button>
@@ -102,7 +330,11 @@ export default function UploadIngest() {
                 </p>
                 <h3 className="font-display text-lg font-bold text-ink">文件上传入库</h3>
               </div>
-              <button type="button" className={ghostBtnClass}>
+              <button
+                type="button"
+                className={ghostBtnClass}
+                onClick={() => void loadSplitterOptions()}
+              >
                 <RefreshCw size={14} />
                 刷新配置
               </button>
@@ -111,33 +343,83 @@ export default function UploadIngest() {
             <div className="grid gap-4 sm:grid-cols-2">
               <label className="block">
                 <span className={labelClass}>知识库名称</span>
-                <input className={fieldClass} defaultValue="default" />
+                <input
+                  className={fieldClass}
+                  value={uploadKnowledgeBase}
+                  onChange={(event) => setUploadKnowledgeBase(event.target.value)}
+                />
               </label>
               <label className="block">
                 <span className={labelClass}>切分策略</span>
-                <select className={fieldClass} defaultValue="自动识别">
-                  {chunkStrategies.map((item) => (
-                    <option key={item} value={item}>
-                      {item}
+                <select
+                  className={fieldClass}
+                  value={uploadSplitter}
+                  onChange={(event) => setUploadSplitter(event.target.value)}
+                >
+                  <option value="">自动识别</option>
+                  {splitterOptions.map((item) => (
+                    <option key={item.name} value={item.name}>
+                      {item.name}
                     </option>
                   ))}
                 </select>
               </label>
             </div>
 
-            <div className="mt-4 flex min-h-[180px] cursor-pointer flex-col items-center justify-center rounded-2xl border border-dashed border-line bg-paper px-4 py-8 text-center transition-colors hover:border-accent/40 hover:bg-accent-soft/20">
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={openFileDialog}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault()
+                  openFileDialog()
+                }
+              }}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              className={`mt-4 flex min-h-[180px] cursor-pointer flex-col items-center justify-center rounded-2xl border border-dashed px-4 py-8 text-center transition-colors ${
+                isDragging
+                  ? 'border-accent bg-accent-soft/30'
+                  : 'border-line bg-paper hover:border-accent/40 hover:bg-accent-soft/20'
+              }`}
+            >
+              <input
+                ref={fileInputRef}
+                type="file"
+                className="hidden"
+                accept={ACCEPTED_FILE_TYPES}
+                onChange={handleFileChange}
+              />
               <UploadCloud size={36} strokeWidth={1.4} className="mb-3 text-accent" />
-              <p className="text-sm text-ink-soft">
-                将文件拖到这里，或{' '}
-                <span className="font-semibold text-accent">点击选择文件</span>
-              </p>
-              <p className="mt-2 text-xs text-ink-muted">支持 txt / md / pdf / docx</p>
+              {selectedFile ? (
+                <>
+                  <p className="text-sm font-semibold text-ink">{selectedFile.name}</p>
+                  <p className="mt-2 text-xs text-ink-muted">
+                    {formatFileSize(selectedFile.size)} · 点击可重新选择文件
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm text-ink-soft">
+                    将文件拖到这里，或{' '}
+                    <span className="font-semibold text-accent">点击选择文件</span>
+                  </p>
+                  <p className="mt-2 text-xs text-ink-muted">支持 txt / md / pdf / docx</p>
+                </>
+              )}
             </div>
 
             <div className="mt-5">
-              <button type="button" className={primaryBtnClass}>
-                <UploadCloud size={16} />
-                上传并解析入库
+              <button
+                type="button"
+                className={primaryBtnClass}
+                onClick={() => void handleUpload()}
+                disabled={uploading}
+              >
+                <UploadCloud size={16} className={uploading ? 'animate-pulse' : ''} />
+                {uploading ? '上传并解析中...' : '上传并解析入库'}
               </button>
             </div>
           </section>
@@ -182,7 +464,7 @@ export default function UploadIngest() {
               </p>
               <h3 className="font-display text-lg font-bold text-ink">纯文本快速入库</h3>
             </div>
-            <button type="button" className={ghostBtnClass}>
+            <button type="button" className={ghostBtnClass} onClick={() => void handleCopyTextContent()}>
               <Copy size={14} />
               复制内容
             </button>
@@ -191,18 +473,32 @@ export default function UploadIngest() {
           <div className="grid gap-4 md:grid-cols-3">
             <label className="block">
               <span className={labelClass}>文件名</span>
-              <input className={fieldClass} placeholder="例如: product_sales.md" />
+              <input
+                className={fieldClass}
+                placeholder="例如: product_sales.md"
+                value={textFilename}
+                onChange={(event) => setTextFilename(event.target.value)}
+              />
             </label>
             <label className="block">
               <span className={labelClass}>知识库名称</span>
-              <input className={fieldClass} defaultValue="default" />
+              <input
+                className={fieldClass}
+                value={textKnowledgeBase}
+                onChange={(event) => setTextKnowledgeBase(event.target.value)}
+              />
             </label>
             <label className="block">
               <span className={labelClass}>切分策略</span>
-              <select className={fieldClass} defaultValue="自动识别">
-                {chunkStrategies.map((item) => (
-                  <option key={item} value={item}>
-                    {item}
+              <select
+                className={fieldClass}
+                value={textSplitter}
+                onChange={(event) => setTextSplitter(event.target.value)}
+              >
+                <option value="">自动识别</option>
+                {splitterOptions.map((item) => (
+                  <option key={item.name} value={item.name}>
+                    {item.name}
                   </option>
                 ))}
               </select>
@@ -214,13 +510,20 @@ export default function UploadIngest() {
             <textarea
               className={`${fieldClass} min-h-[140px] resize-y`}
               placeholder="在此粘贴需要导入的文本内容"
+              value={textContent}
+              onChange={(event) => setTextContent(event.target.value)}
             />
           </label>
 
           <div className="mt-5">
-            <button type="button" className={primaryBtnClass}>
-              <CheckCircle2 size={16} />
-              文本直接入库
+            <button
+              type="button"
+              className={primaryBtnClass}
+              onClick={() => void handleTextIngest()}
+              disabled={ingestingText}
+            >
+              <CheckCircle2 size={16} className={ingestingText ? 'animate-pulse' : ''} />
+              {ingestingText ? '入库中...' : '文本直接入库'}
             </button>
           </div>
         </motion.section>
@@ -239,8 +542,13 @@ export default function UploadIngest() {
               </p>
               <h3 className="font-display text-lg font-bold text-ink">最近入库结果</h3>
             </div>
-            <button type="button" className={ghostBtnClass}>
-              <RefreshCw size={14} />
+            <button
+              type="button"
+              className={ghostBtnClass}
+              onClick={() => void loadDocuments()}
+              disabled={loadingDocuments}
+            >
+              <RefreshCw size={14} className={loadingDocuments ? 'animate-spin' : ''} />
               全部刷新
             </button>
           </div>
@@ -260,11 +568,36 @@ export default function UploadIngest() {
                 </tr>
               </thead>
               <tbody>
-                <tr>
-                  <td colSpan={tableHeaders.length} className="px-4 py-16 text-center text-ink-muted">
-                    暂无入库记录
-                  </td>
-                </tr>
+                {recentDocuments.length === 0 ? (
+                  <tr>
+                    <td colSpan={tableHeaders.length} className="px-4 py-16 text-center text-ink-muted">
+                      {loadingDocuments ? '加载中...' : '暂无入库记录'}
+                    </td>
+                  </tr>
+                ) : (
+                  recentDocuments.map((document) => (
+                    <tr key={document.id} className="border-b border-line/70">
+                      <td className="px-4 py-3 text-ink">{document.filename}</td>
+                      <td className="px-4 py-3 text-ink-soft">
+                        {document.status === 'indexed' ? '100%' : '处理中'}
+                      </td>
+                      <td className="px-4 py-3 text-ink-soft">{formatStatus(document.status)}</td>
+                      <td className="px-4 py-3 text-ink-soft">{document.file_type}</td>
+                      <td className="px-4 py-3 text-ink-soft">{document.chunk_count}</td>
+                      <td className="px-4 py-3 text-ink-soft">
+                        {document.file_size == null ? '-' : formatFileSize(document.file_size)}
+                      </td>
+                      <td className="px-4 py-3 text-ink-soft">
+                        {formatDate(document.updated_at, 'full')}
+                      </td>
+                      <td className="px-4 py-3 text-ink-soft">
+                        <Link to="/documents" className="text-accent hover:underline">
+                          查看
+                        </Link>
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>

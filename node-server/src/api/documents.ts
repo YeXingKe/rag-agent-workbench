@@ -56,6 +56,23 @@ async function persistUpload(file: Express.Multer.File): Promise<{ storedPath: s
   return { storedPath: saved.path, fileSize: saved.size };
 }
 
+/** 根据入库结果生成响应文案（含 Milvus 降级提示）。 */
+function buildIngestMessage(document: { chunk_count: number; status: string }, uploaded = false): string {
+  if (document.chunk_count > 0 && document.status === 'parsed') {
+    return uploaded
+      ? 'Document uploaded and parsed successfully (Milvus unavailable, vector index skipped).'
+      : 'Document ingested successfully (Milvus unavailable, vector index skipped).';
+  }
+  if (document.chunk_count > 0) {
+    return uploaded
+      ? 'Document uploaded and ingested successfully'
+      : 'Document ingested successfully';
+  }
+  return uploaded
+    ? 'Document uploaded but no searchable chunks were produced'
+    : 'Document ingested but no searchable chunks were produced';
+}
+
 /**
  * POST /documents/ingest-text
  * 通过纯文本快速创建文档并完成切分入库。
@@ -80,7 +97,7 @@ router.post('/ingest-text', async (req, res, next) => {
 
     res.status(201).json({
       document: toDocumentItem(document),
-      message: 'Document ingested successfully',
+      message: buildIngestMessage(document),
     });
   } catch (error) {
     if (isClientValueError(error)) {
@@ -128,7 +145,7 @@ router.post('/upload', upload.single('file'), async (req, res, next) => {
 
     res.status(201).json({
       document: toDocumentItem(document),
-      message: 'Document uploaded and ingested successfully',
+      message: buildIngestMessage(document, true),
     });
   } catch (error) {
     if (storedPath) {
