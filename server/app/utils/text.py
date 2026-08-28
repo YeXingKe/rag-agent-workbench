@@ -8,15 +8,24 @@ def clean_text(text: str) -> str:
     """对原始文本做最基础的清洗。
 
     目标不是“过度处理”，而是保证后续切分更稳定：
+    - 去掉 NUL（0x00）等 PG UTF8 不接受的控制字符（PDF 解析常见）；
     - 统一换行符；
     - 去掉首尾空白；
     - 压缩过多的空行；
     - 保留正常段落结构，便于后续溯源展示。
     """
 
-    normalized_text = text.replace('\r\n', '\n').replace('\r', '\n').strip() # 统一换行 + 去首尾空白
-    normalized_text = re.sub(r'\n{3,}', '\n\n', normalized_text) # 压缩过多的空行
-    normalized_text = re.sub(r'[ \t]{2,}', ' ', normalized_text) # 压缩过多的空格
+    normalized_text = (
+        (text or '')
+        .replace('\x00', '')
+        .replace('\r\n', '\n')
+        .replace('\r', '\n')
+        .strip()
+    )  # 去 NUL + 统一换行 + 去首尾空白
+    # 去掉其余 C0 控制符（保留 \t \n）
+    normalized_text = re.sub(r'[\x01-\x08\x0b\x0c\x0e-\x1f]', '', normalized_text)
+    normalized_text = re.sub(r'\n{3,}', '\n\n', normalized_text)  # 压缩过多的空行
+    normalized_text = re.sub(r'[ \t]{2,}', ' ', normalized_text)  # 压缩过多的空格
     return normalized_text
 
 

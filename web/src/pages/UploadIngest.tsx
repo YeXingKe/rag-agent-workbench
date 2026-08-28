@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ChangeEvent, type DragEvent } from 'react'
+import { useCallback, useRef, useState, type ChangeEvent, type DragEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import {
@@ -10,12 +10,14 @@ import {
   CheckCircle2,
 } from 'lucide-react'
 import MainLayout from '../components/layout/MainLayout'
+import { useApi } from '../hooks/useApi'
 import {
   knowledgeApi,
   type DocumentItem,
   type SplitterOption,
 } from '../services/knowledgeApi'
 import { formatDate, formatFileSize } from '../utils/formatters'
+import { dedupeInflight } from '../utils/inflightRequest'
 
 const pipelineSteps = [
   '上传源文件',
@@ -79,44 +81,33 @@ export default function UploadIngest() {
   const [isDragging, setIsDragging] = useState(false)
   const [uploadKnowledgeBase, setUploadKnowledgeBase] = useState('default')
   const [uploadSplitter, setUploadSplitter] = useState('')
-  const [splitterOptions, setSplitterOptions] = useState<SplitterOption[]>([])
   const [uploading, setUploading] = useState(false)
   const [ingestingText, setIngestingText] = useState(false)
-  const [loadingDocuments, setLoadingDocuments] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
-  const [recentDocuments, setRecentDocuments] = useState<DocumentItem[]>([])
 
   const [textFilename, setTextFilename] = useState('')
   const [textKnowledgeBase, setTextKnowledgeBase] = useState('default')
   const [textSplitter, setTextSplitter] = useState('')
   const [textContent, setTextContent] = useState('')
 
-  const loadSplitterOptions = useCallback(async () => {
-    try {
-      const options = await knowledgeApi.getSplitterOptions()
-      setSplitterOptions(options)
-    } catch (loadError) {
-      console.error(loadError)
-    }
+  // 挂载加载：Strict Mode 双调用由 api.get 去重合并为一次网络请求
+  const {
+    data: splitterOptions,
+    refetch: loadSplitterOptions,
+  } = useApi<SplitterOption[]>(() => knowledgeApi.getSplitterOptions(), [])
+
+  const {
+    data: recentDocuments,
+    loading: loadingDocuments,
+    error: documentsError,
+    refetch: loadDocuments,
+  } = useApi<DocumentItem[]>(async () => {
+    const documents = await knowledgeApi.listDocuments()
+    return documents.slice(0, 10)
   }, [])
 
-  const loadDocuments = useCallback(async () => {
-    setLoadingDocuments(true)
-    try {
-      const documents = await knowledgeApi.listDocuments()
-      setRecentDocuments(documents.slice(0, 10))
-    } catch (loadError) {
-      setError(resolveErrorMessage(loadError, '加载最近入库结果失败'))
-    } finally {
-      setLoadingDocuments(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    void loadSplitterOptions()
-    void loadDocuments()
-  }, [loadDocuments, loadSplitterOptions])
+  const displayError = error ?? (documentsError ? `加载最近入库结果失败: ${documentsError}` : null)
 
   const openFileDialog = () => {
     fileInputRef.current?.click()
@@ -153,26 +144,38 @@ export default function UploadIngest() {
   }
 
   const handleUpload = async () => {
-    if (uploadingRef.current) {
-      return
-    }
-
     if (!selectedFile) {
       setError('请先选择要上传的文件')
       openFileDialog()
       return
     }
 
-    uploadingRef.current = true
+    // 同一文件 + 入库参数的并发点击复用同一个 Promise，避免打两次上传
+    const file = selectedFile
+    const knowledgeBase = uploadKnowledgeBase
+    const preferredSplitter = uploadSplitter || null
+    const dedupeKey = [
+      'POST',
+      '/documents/upload',
+      file.name,
+      String(file.size),
+      String(file.lastModified),
+      knowledgeBase,
+      preferredSplitter ?? '',
+    ].join(':')
+
     setUploading(true)
     setError(null)
     setSuccessMessage(null)
+    uploadingRef.current = true
 
     try {
-      const response = await knowledgeApi.uploadDocument(selectedFile, {
-        knowledgeBase: uploadKnowledgeBase,
-        preferredSplitter: uploadSplitter || null,
-      })
+      const response = await dedupeInflight(dedupeKey, () =>
+        knowledgeApi.uploadDocument(file, {
+          knowledgeBase,
+          preferredSplitter,
+        }),
+      )
       setSuccessMessage(response.message || '文档上传并入库成功')
       setSelectedFile(null)
       await loadDocuments()
@@ -261,15 +264,15 @@ export default function UploadIngest() {
           </button>
         </motion.div>
 
-        {(error || successMessage) && (
+        {(displayError || successMessage) && (
           <div
             className={`rounded-2xl border px-4 py-3 text-sm ${
-              error
+              displayError
                 ? 'border-red-300/60 bg-red-50 text-red-700'
                 : 'border-emerald-300/60 bg-emerald-50 text-emerald-700'
             }`}
           >
-            {error || successMessage}
+            {displayError || successMessage}
           </div>
         )}
 
@@ -357,7 +360,7 @@ export default function UploadIngest() {
                   onChange={(event) => setUploadSplitter(event.target.value)}
                 >
                   <option value="">自动识别</option>
-                  {splitterOptions.map((item) => (
+                  {(splitterOptions ?? []).map((item) => (
                     <option key={item.name} value={item.name}>
                       {item.name}
                     </option>
@@ -496,7 +499,7 @@ export default function UploadIngest() {
                 onChange={(event) => setTextSplitter(event.target.value)}
               >
                 <option value="">自动识别</option>
-                {splitterOptions.map((item) => (
+                {(splitterOptions ?? []).map((item) => (
                   <option key={item.name} value={item.name}>
                     {item.name}
                   </option>
@@ -568,14 +571,14 @@ export default function UploadIngest() {
                 </tr>
               </thead>
               <tbody>
-                {recentDocuments.length === 0 ? (
+                {(recentDocuments ?? []).length === 0 ? (
                   <tr>
                     <td colSpan={tableHeaders.length} className="px-4 py-16 text-center text-ink-muted">
                       {loadingDocuments ? '加载中...' : '暂无入库记录'}
                     </td>
                   </tr>
                 ) : (
-                  recentDocuments.map((document) => (
+                  (recentDocuments ?? []).map((document) => (
                     <tr key={document.id} className="border-b border-line/70">
                       <td className="px-4 py-3 text-ink">{document.filename}</td>
                       <td className="px-4 py-3 text-ink-soft">

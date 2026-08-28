@@ -40,6 +40,8 @@ export interface Settings {
   milvusPort: number;
   milvusCollection: string;
   milvusDimension: number;
+  /** Zilliz Cloud / 鉴权 Token；本地无鉴权 Milvus 可为空 */
+  milvusToken: string | null;
   postgresDsn: string | null;
   redisUrl: string | null;
   appHost: string;
@@ -162,6 +164,7 @@ function loadSettings(): Settings {
     milvusPort,
     milvusCollection: readEnv('MILVUS_COLLECTION') ?? 'knowledge_base',
     milvusDimension: parseIntValue(readEnv('MILVUS_DIMENSION'), 1536),
+    milvusToken: readEnv('MILVUS_TOKEN') ?? null,
     postgresDsn: readEnv('POSTGRES_DSN') ?? null,
     redisUrl: readEnv('REDIS_URL') ?? null,
     appHost: readEnv('APP_HOST') ?? '0.0.0.0',

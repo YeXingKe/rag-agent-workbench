@@ -41,7 +41,23 @@ export async function warmUpSingletons(): Promise<void> {
 
   // 1) 数据库：建连接池 + create_all 风格建表（对应 Python Base.metadata.create_all）
   getPool();
-  await initTables();
+  try {
+    await initTables();
+    logger.info('Database tables ready (document / chunk / query_log)');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    // PostgreSQL 15+：普通用户默认可能无法在 public schema 建表
+    if (/permission denied for schema public/i.test(message)) {
+      logger.error(
+        '建表失败：当前数据库用户没有 public schema 的 CREATE 权限。' +
+          '请用 postgres（或库 owner）在 rag_db 上执行 node-server/scripts/init-schema.sql，然后重启服务。' +
+          ` 原始错误: ${message}`,
+      );
+      throw error;
+    }
+    throw error;
+  }
+
   // 2) 本地上传目录：保证文件上传接口可直接落盘
   ensureUploadDir();
 

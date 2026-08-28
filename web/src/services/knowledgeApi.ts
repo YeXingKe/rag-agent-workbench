@@ -1,4 +1,5 @@
 import api from './api'
+import { buildHttpDedupeKey, dedupeInflight } from '../utils/inflightRequest'
 
 export interface DocumentItem {
     id: string
@@ -50,7 +51,7 @@ export const knowledgeApi = {
     },
 
     /**
-     * 上传文档
+     * 上传文档（同文件+参数的并发请求会合并为一次）
      */
     uploadDocument: async (
         file: File,
@@ -69,10 +70,20 @@ export const knowledgeApi = {
             formData.append('preferred_splitter', options.preferredSplitter.trim())
         }
 
+        const dedupeKey = buildHttpDedupeKey('POST', '/documents/upload', {
+            name: file.name,
+            size: file.size,
+            lastModified: file.lastModified,
+            knowledgeBase: options?.knowledgeBase ?? '',
+            preferredSplitter: options?.preferredSplitter ?? '',
+        })
+
         try {
-            return await api.post<DocumentMutationResponse>('/documents/upload', formData, {
-                timeout: 180_000,
-            })
+            return await dedupeInflight(dedupeKey, () =>
+                api.post<DocumentMutationResponse>('/documents/upload', formData, {
+                    timeout: 180_000,
+                }),
+            )
         } catch (error) {
             console.error('上传文档失败:', error)
             throw error

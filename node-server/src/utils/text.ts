@@ -6,9 +6,19 @@
 
 /**
  * 规范化文本：统一换行、压缩多余空行与连续空白。
+ *
+ * 额外去掉 NUL（0x00）等 PostgreSQL UTF8 文本字段不接受的字节，
+ * 避免 PDF 解析产物写入时报：invalid byte sequence for encoding "UTF8": 0x00。
  */
 export function cleanText(text: string): string {
-  let normalizedText = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+  // PDF / 二进制解析常夹带 \u0000，PG text/jsonb 无法存储
+  let normalizedText = String(text ?? '')
+    .replace(/\u0000/g, '')
+    // 去掉其余 C0 控制符（保留 \t \n \r）
+    .replace(/[\u0001-\u0008\u000B\u000C\u000E-\u001F]/g, '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .trim();
   normalizedText = normalizedText.replace(/\n{3,}/g, '\n\n');
   normalizedText = normalizedText.replace(/[ \t]{2,}/g, ' ');
   return normalizedText;

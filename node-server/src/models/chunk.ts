@@ -144,9 +144,30 @@ export interface ChunkInsertInput {
   enabled?: boolean;
 }
 
+/** 递归去掉字符串中的 NUL，避免 jsonb/text 写入 PG 时报 UTF8 0x00 错误。 */
+function stripNullBytes(value: unknown): unknown {
+  if (typeof value === 'string') {
+    return value.replace(/\u0000/g, '');
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => stripNullBytes(item));
+  }
+  if (value && typeof value === 'object') {
+    const result: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      result[key.replace(/\u0000/g, '')] = stripNullBytes(item);
+    }
+    return result;
+  }
+  return value;
+}
+
 /** 插入单条 chunk；metadata 以 JSON 字符串写入 jsonb。 */
 export async function insertChunk(db: Queryable, input: ChunkInsertInput): Promise<ChunkRow> {
   const id = input.id ?? randomUUID();
+  // PDF 等解析可能残留 0x00，入库前强制剔除
+  const safeContent = String(input.content ?? '').replace(/\u0000/g, '');
+  const safeMetadata = stripNullBytes(input.metadata_json ?? {}) as Record<string, unknown>;
   const result = await db.query(
     `
     INSERT INTO chunk (
@@ -159,8 +180,8 @@ export async function insertChunk(db: Queryable, input: ChunkInsertInput): Promi
       id,
       input.document_id,
       input.chunk_index,
-      input.content,
-      JSON.stringify(input.metadata_json ?? {}),
+      safeContent,
+      JSON.stringify(safeMetadata),
       input.token_count ?? 0,
       input.page_number ?? null,
       input.start_offset ?? null,

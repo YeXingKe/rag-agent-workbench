@@ -71,29 +71,59 @@ export async function checkMilvusReachable(timeoutMs = 2_000): Promise<boolean> 
   });
 }
 
-/** 供 /health 使用的轻量探活，不触发 Milvus SDK。 */
+/**
+ * 供 /health 使用的探活。
+ *
+ * - 本地 Milvus：先做 TCP 探测
+ * - Zilliz Cloud（有 Token 或 https URI）：直接用 SDK listCollections，避免误用 19530
+ */
 export async function probeMilvusHealth(): Promise<{ ok: boolean; error: string | null }> {
   const settings = getSettings();
-  const reachable = await checkMilvusReachable();
-  if (!reachable) {
+  const uri = settings.resolvedMilvusUri;
+  const isCloud =
+    Boolean(settings.milvusToken) || /^https:\/\//i.test(uri) || uri.includes('zilliz.com');
+
+  if (!isCloud) {
+    const reachable = await checkMilvusReachable();
+    if (!reachable) {
+      resetMilvusClient();
+      return {
+        ok: false,
+        error: `Milvus is not reachable at ${uri}`,
+      };
+    }
+    return { ok: true, error: null };
+  }
+
+  try {
+    const client = getMilvusClient();
+    await client.listCollections();
+    return { ok: true, error: null };
+  } catch (error) {
     resetMilvusClient();
     return {
       ok: false,
-      error: `Milvus is not reachable at ${settings.resolvedMilvusUri}`,
+      error: `Milvus cloud probe failed (${uri}): ${formatMilvusError(error)}`,
     };
   }
-  return { ok: true, error: null };
 }
 
-/** 获取 MilvusClient 单例。 */
+/** 获取 MilvusClient 单例（Zilliz 需带 token）。 */
 export function getMilvusClient(): MilvusClient {
   if (milvusClient) {
     return milvusClient;
   }
-  milvusClient = new MilvusClient({
-    address: toMilvusAddress(getSettings().resolvedMilvusUri),
+  const settings = getSettings();
+  const options: ConstructorParameters<typeof MilvusClient>[0] = {
+    address: toMilvusAddress(settings.resolvedMilvusUri),
     timeout: 15_000,
-  });
+  };
+  if (settings.milvusToken) {
+    options.token = settings.milvusToken;
+    // Zilliz Serverless 走 HTTPS
+    options.ssl = true;
+  }
+  milvusClient = new MilvusClient(options);
   return milvusClient;
 }
 
