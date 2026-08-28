@@ -1,16 +1,46 @@
 import { Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { RefreshCw, Upload, FilePlus2, Layers, Settings2 } from 'lucide-react'
+import { RefreshCw, Upload, FilePlus2, Layers, Settings2, Trash2 } from 'lucide-react'
+import { useState } from 'react'
 import MainLayout from '../components/layout/MainLayout'
+import { useApi } from '../hooks/useApi'
+import { knowledgeApi, type DocumentItem } from '../services/knowledgeApi'
+import { formatDate, formatFileSize } from '../utils/formatters'
 
 const tableHeaders = ['文件名', '知识库', '类型', 'Chunks', '大小', '更新时间', '操作']
 
 const cardClass = 'rounded-2xl border border-line bg-paper-raised p-5 sm:p-6'
 const ghostBtnClass =
-  'inline-flex items-center gap-2 rounded-xl border border-line bg-paper px-3.5 py-2 text-sm font-medium text-ink-soft transition-colors hover:border-accent/30 hover:text-ink'
+  'inline-flex items-center gap-2 rounded-xl border border-line bg-paper px-3.5 py-2 text-sm font-medium text-ink-soft transition-colors hover:border-accent/30 hover:text-ink disabled:cursor-not-allowed disabled:opacity-50'
 const primaryBtnClass = 'btn-primary'
 
 export default function KnowledgeManagement() {
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+
+  const {
+    data: documents,
+    loading,
+    error,
+    refetch,
+  } = useApi<DocumentItem[]>(() => knowledgeApi.listDocuments(), [])
+
+  const rows = documents ?? []
+
+  const handleDelete = async (id: string) => {
+    if (deletingId) {
+      return
+    }
+    setDeletingId(id)
+    try {
+      await knowledgeApi.deleteDocument(id)
+      refetch()
+    } catch (deleteError) {
+      console.error(deleteError)
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
   return (
     <MainLayout>
       <div className="flex min-h-full w-full flex-1 flex-col gap-4 lg:gap-5">
@@ -29,11 +59,22 @@ export default function KnowledgeManagement() {
               文档库
             </h1>
           </div>
-          <button type="button" className={ghostBtnClass}>
-            <RefreshCw size={15} />
+          <button
+            type="button"
+            className={ghostBtnClass}
+            onClick={() => void refetch()}
+            disabled={loading}
+          >
+            <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
             刷新数据
           </button>
         </motion.div>
+
+        {error && (
+          <div className="rounded-2xl border border-red-300/60 bg-red-50 px-4 py-3 text-sm text-red-700">
+            加载文档列表失败: {error}
+          </div>
+        )}
 
         {/* 入库与索引 */}
         <motion.section
@@ -87,7 +128,7 @@ export default function KnowledgeManagement() {
             </div>
             <div className="flex items-center gap-2">
               <span className="rounded-full bg-accent-soft px-3 py-1 text-xs font-semibold text-accent-deep">
-                0 份文档
+                {rows.length} 份文档
               </span>
               <button
                 type="button"
@@ -114,14 +155,42 @@ export default function KnowledgeManagement() {
                 </tr>
               </thead>
               <tbody>
-                <tr>
-                  <td
-                    colSpan={tableHeaders.length}
-                    className="px-4 py-20 text-center text-ink-muted"
-                  >
-                    暂无文档数据
-                  </td>
-                </tr>
+                {rows.length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={tableHeaders.length}
+                      className="px-4 py-20 text-center text-ink-muted"
+                    >
+                      {loading ? '加载中...' : '暂无文档数据'}
+                    </td>
+                  </tr>
+                ) : (
+                  rows.map((document) => (
+                    <tr key={document.id} className="border-b border-line/70">
+                      <td className="px-4 py-3 text-ink">{document.filename}</td>
+                      <td className="px-4 py-3 text-ink-soft">{document.knowledge_base}</td>
+                      <td className="px-4 py-3 text-ink-soft">{document.file_type}</td>
+                      <td className="px-4 py-3 text-ink-soft">{document.chunk_count}</td>
+                      <td className="px-4 py-3 text-ink-soft">
+                        {document.file_size == null ? '-' : formatFileSize(document.file_size)}
+                      </td>
+                      <td className="px-4 py-3 text-ink-soft">
+                        {formatDate(document.updated_at, 'full')}
+                      </td>
+                      <td className="px-4 py-3">
+                        <button
+                          type="button"
+                          className={ghostBtnClass}
+                          disabled={deletingId === document.id}
+                          onClick={() => void handleDelete(document.id)}
+                        >
+                          <Trash2 size={15} />
+                          {deletingId === document.id ? '删除中...' : '删除'}
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>
