@@ -25,6 +25,28 @@ export interface DocumentMutationResponse {
     message: string
 }
 
+export interface ChunkItem {
+    id: string
+    document_id: string
+    chunk_index: number
+    content: string
+    metadata_json: Record<string, unknown>
+    token_count: number
+    page_number?: number | null
+    start_offset?: number | null
+    end_offset?: number | null
+    vector_id?: string | null
+    enabled: boolean
+    created_at: string
+    updated_at: string
+}
+
+export interface ChunkUpdateRequest {
+    content?: string | null
+    enabled?: boolean | null
+    metadata_json?: Record<string, unknown> | null
+}
+
 export const knowledgeApi = {
     /**
      * 获取文档列表
@@ -138,10 +160,63 @@ export const knowledgeApi = {
      */
     getDocumentChunks: async (documentId: string) => {
         try {
-            return await api.get(`/documents/${documentId}/chunks`)
+            return await api.get<ChunkItem[]>(`/documents/${documentId}/chunks`)
         } catch (error) {
             console.error('获取文档 Chunk 失败:', error)
-            return { code: 200, message: '成功', data: [] }
+            throw error
+        }
+    },
+
+    /**
+     * 获取全局 Chunk 列表（可按文档过滤）
+     */
+    listChunks: async (params?: { documentId?: string | null; limit?: number }) => {
+        try {
+            return await api.get<ChunkItem[]>('/chunks', {
+                params: {
+                    document_id: params?.documentId || undefined,
+                    limit: params?.limit ?? 200,
+                },
+            })
+        } catch (error) {
+            console.error('获取 Chunk 列表失败:', error)
+            throw error
+        }
+    },
+
+    /**
+     * 获取单个 Chunk 详情
+     */
+    getChunk: async (chunkId: string) => {
+        try {
+            return await api.get<ChunkItem>(`/chunks/${chunkId}`)
+        } catch (error) {
+            console.error('获取 Chunk 详情失败:', error)
+            throw error
+        }
+    },
+
+    /**
+     * 更新 Chunk（正文 / 启用状态 / 元数据）
+     */
+    updateChunk: async (chunkId: string, payload: ChunkUpdateRequest) => {
+        try {
+            return await api.patch<ChunkItem>(`/chunks/${chunkId}`, payload)
+        } catch (error) {
+            console.error('更新 Chunk 失败:', error)
+            throw error
+        }
+    },
+
+    /**
+     * 删除 Chunk
+     */
+    deleteChunk: async (chunkId: string) => {
+        try {
+            return await api.delete<void>(`/chunks/${chunkId}`)
+        } catch (error) {
+            console.error('删除 Chunk 失败:', error)
+            throw error
         }
     },
 

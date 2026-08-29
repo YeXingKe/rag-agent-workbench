@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
-import { dashboardApi } from '../services/dashboardApi'
-import { DashboardStats } from '../types'
+import { dashboardApi, type DashboardOverview } from '../services/dashboardApi'
+import type { DashboardStats } from '../types'
 
 interface UseStatsReturn {
   stats: DashboardStats
@@ -11,7 +11,7 @@ interface UseStatsReturn {
 
 /**
  * Dashboard 统计数据 Hook
- * 自动轮询获取最新统计数据（GET 去重由 api.get 处理）
+ * 通过聚合接口拉取文档 / 切片 / 会话 / 健康状态
  */
 export function useStats(autoRefresh: boolean = false, intervalMs: number = 30000): UseStatsReturn {
   const [stats, setStats] = useState<DashboardStats>({
@@ -28,29 +28,21 @@ export function useStats(autoRefresh: boolean = false, intervalMs: number = 3000
       setLoading(true)
       setError(null)
 
-      const response = await dashboardApi.getStats()
-
-      if (response && response.data) {
-        setStats(response.data)
-      } else {
-        setStats({
-          totalDocuments: 24,
-          totalChunks: 128,
-          totalSessions: 12,
-          systemHealth: 'healthy',
-        })
-      }
+      const overview: DashboardOverview = await dashboardApi.getOverview()
+      setStats({
+        totalDocuments: overview.totalDocuments,
+        totalChunks: overview.totalChunks,
+        totalSessions: overview.totalSessions,
+        systemHealth: overview.systemHealth,
+      })
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : '获取统计数据失败'
       setError(errorMessage)
       console.error('获取统计数据失败:', err)
-
-      setStats({
-        totalDocuments: 24,
-        totalChunks: 128,
-        totalSessions: 12,
+      setStats((prev) => ({
+        ...prev,
         systemHealth: 'warning',
-      })
+      }))
     } finally {
       setLoading(false)
     }

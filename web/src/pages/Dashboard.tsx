@@ -2,13 +2,9 @@ import { Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { RefreshCw, ArrowUpRight, PackageOpen } from 'lucide-react'
 import MainLayout from '../components/layout/MainLayout'
-
-const stats = [
-  { label: '知识文档', value: '0', hint: '已入库文档总数' },
-  { label: '文本切片', value: '0', hint: '当前文件切分总量' },
-  { label: '最近会话', value: '0', hint: '已记录的智能问答' },
-  { label: '后端状态', value: '检查中', hint: 'Postgres / Redis / Milvus 健康度探测' },
-]
+import { useApi } from '../hooks/useApi'
+import { dashboardApi, type DashboardOverview } from '../services/dashboardApi'
+import { formatDate, formatFileSize } from '../utils/formatters'
 
 function EmptyState({ text }: { text: string }) {
   return (
@@ -21,10 +17,77 @@ function EmptyState({ text }: { text: string }) {
   )
 }
 
+function healthLabel(overview: DashboardOverview | null, loading: boolean): string {
+  if (loading && !overview) {
+    return '检查中'
+  }
+  if (!overview) {
+    return '未知'
+  }
+  switch (overview.systemHealth) {
+    case 'healthy':
+      return '正常'
+    case 'warning':
+      return '降级'
+    case 'error':
+      return '异常'
+    default:
+      return '未知'
+  }
+}
+
+function statusText(status: string): string {
+  switch (status) {
+    case 'indexed':
+      return '已入库'
+    case 'parsed':
+      return '已解析'
+    case 'uploaded':
+      return '已上传'
+    case 'failed':
+      return '失败'
+    default:
+      return status
+  }
+}
+
 export default function Dashboard() {
+  const {
+    data: overview,
+    loading,
+    error,
+    refetch,
+  } = useApi<DashboardOverview>(() => dashboardApi.getOverview(), [])
+
+  const stats = [
+    {
+      label: '知识文档',
+      value: overview ? String(overview.totalDocuments) : loading ? '...' : '0',
+      hint: '已入库文档总数',
+    },
+    {
+      label: '文本切片',
+      value: overview ? String(overview.totalChunks) : loading ? '...' : '0',
+      hint: '当前文件切分总量',
+    },
+    {
+      label: '最近会话',
+      value: overview ? String(overview.totalSessions) : loading ? '...' : '0',
+      hint: '已记录的智能问答',
+    },
+    {
+      label: '后端状态',
+      value: healthLabel(overview, loading),
+      hint: overview?.healthDetail || 'Postgres / Redis / Milvus 健康度探测',
+    },
+  ]
+
+  const recentDocuments = overview?.recentDocuments ?? []
+  const recentSessions = overview?.recentSessions ?? []
+
   return (
     <MainLayout>
-      <div className="flex min-h-full w-full flex-1 flex-col gap-4 lg:gap-5">
+      <div className="flex w-full flex-col gap-4 lg:gap-5">
         {/* 页头 */}
         <motion.div
           initial={{ opacity: 0, y: 8 }}
@@ -42,12 +105,20 @@ export default function Dashboard() {
           </div>
           <button
             type="button"
-            className="inline-flex items-center gap-2 rounded-xl border border-line bg-paper px-4 py-2 text-sm font-medium text-ink-soft transition-colors hover:border-accent/30 hover:text-ink"
+            className="inline-flex items-center gap-2 rounded-xl border border-line bg-paper px-4 py-2 text-sm font-medium text-ink-soft transition-colors hover:border-accent/30 hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+            onClick={() => void refetch()}
+            disabled={loading}
           >
-            <RefreshCw size={15} />
+            <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
             刷新数据
           </button>
         </motion.div>
+
+        {error && (
+          <div className="rounded-2xl border border-red-300/60 bg-red-50 px-4 py-3 text-sm text-red-700">
+            加载工作台数据失败: {error}
+          </div>
+        )}
 
         {/* 产品横幅 */}
         <motion.section
@@ -74,10 +145,7 @@ export default function Dashboard() {
             </div>
 
             <div className="flex flex-wrap gap-3 lg:flex-col lg:items-stretch">
-              <Link
-                to="/upload"
-                className="btn-primary"
-              >
+              <Link to="/upload" className="btn-primary">
                 开始知识导入
                 <ArrowUpRight size={15} />
               </Link>
@@ -112,15 +180,15 @@ export default function Dashboard() {
           ))}
         </motion.div>
 
-        {/* 最近列表：占满剩余高度 */}
+        {/* 最近列表 */}
         <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.45, delay: 0.16 }}
-          className="grid min-h-[280px] flex-1 grid-cols-1 gap-3 sm:gap-4 lg:grid-cols-2"
+          className="grid grid-cols-1 gap-3 sm:gap-4 lg:grid-cols-2"
         >
-          <section className="flex min-h-0 flex-col rounded-2xl border border-line bg-paper-raised p-5 sm:p-6">
-            <div className="mb-2 flex shrink-0 items-start justify-between gap-3">
+          <section className="flex h-[360px] flex-col overflow-hidden rounded-2xl border border-line bg-paper-raised p-5 sm:p-6">
+            <div className="mb-3 flex shrink-0 items-start justify-between gap-3">
               <div>
                 <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-accent">
                   Documents
@@ -134,11 +202,40 @@ export default function Dashboard() {
                 查看全部
               </Link>
             </div>
-            <EmptyState text="暂无文档数据" />
+
+            {loading && !overview ? (
+              <div className="flex flex-1 items-center justify-center text-sm text-ink-muted">
+                加载中...
+              </div>
+            ) : recentDocuments.length === 0 ? (
+              <EmptyState text="暂无文档数据" />
+            ) : (
+              <div className="h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain pr-1">
+                {recentDocuments.map((doc) => (
+                  <Link
+                    key={doc.id}
+                    to="/documents"
+                    className="block rounded-xl border border-line bg-paper px-3 py-3 transition-colors hover:border-accent/30"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="truncate text-sm font-semibold text-ink">{doc.filename}</p>
+                      <span className="shrink-0 text-[11px] text-ink-muted">
+                        {statusText(doc.status)}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-xs text-ink-muted">
+                      {doc.chunk_count} chunks ·{' '}
+                      {doc.file_size == null ? '-' : formatFileSize(doc.file_size)} ·{' '}
+                      {formatDate(doc.updated_at, 'relative')}
+                    </p>
+                  </Link>
+                ))}
+              </div>
+            )}
           </section>
 
-          <section className="flex min-h-0 flex-col rounded-2xl border border-line bg-paper-raised p-5 sm:p-6">
-            <div className="mb-2 flex shrink-0 items-start justify-between gap-3">
+          <section className="flex h-[360px] flex-col overflow-hidden rounded-2xl border border-line bg-paper-raised p-5 sm:p-6">
+            <div className="mb-3 flex shrink-0 items-start justify-between gap-3">
               <div>
                 <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-accent">
                   Sessions
@@ -152,7 +249,34 @@ export default function Dashboard() {
                 进入问答
               </Link>
             </div>
-            <EmptyState text="暂无会话记录" />
+
+            {loading && !overview ? (
+              <div className="flex flex-1 items-center justify-center text-sm text-ink-muted">
+                加载中...
+              </div>
+            ) : recentSessions.length === 0 ? (
+              <EmptyState text="暂无会话记录" />
+            ) : (
+              <div className="h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain pr-1">
+                {recentSessions.map((session) => (
+                  <Link
+                    key={session.session_id}
+                    to="/agent"
+                    className="block rounded-xl border border-line bg-paper px-3 py-3 transition-colors hover:border-accent/30"
+                  >
+                    <p className="truncate text-sm font-semibold text-ink">
+                      {session.latest_question || '未命名会话'}
+                    </p>
+                    <p className="mt-1 line-clamp-2 text-xs text-ink-soft">
+                      {session.latest_answer || '暂无回答'}
+                    </p>
+                    <p className="mt-2 text-[11px] text-ink-muted">
+                      {session.message_count} 轮 · {formatDate(session.updated_at, 'relative')}
+                    </p>
+                  </Link>
+                ))}
+              </div>
+            )}
           </section>
         </motion.div>
       </div>

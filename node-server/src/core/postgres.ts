@@ -2,10 +2,14 @@
  * PostgreSQL 连接池与会话管理
  *
  * 提供连接池单例、轻量 withClient，以及带 BEGIN/COMMIT/ROLLBACK 的 withSession。
+ *
+ * 注意：空闲连接被服务端断开时，Client 会触发 error 事件；
+ * 若不监听，Node 会以 Unhandled 'error' event 直接退出进程。
  */
 import pg from 'pg';
 
 import { getSettings } from '../config/settings.js';
+import { logger } from '../utils/logger.js';
 
 const { Pool } = pg;
 
@@ -13,6 +17,25 @@ const { Pool } = pg;
 export type Queryable = pg.Pool | pg.PoolClient;
 
 let pool: pg.Pool | null = null;
+
+/** 判断是否为连接已断开类错误（回滚时不应再抛出掩盖业务错误）。 */
+function isConnectionError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const message = error.message.toLowerCase();
+  return (
+    message.includes('connection terminated') ||
+    message.includes('connection ended') ||
+    message.includes('client has encountered a connection error') ||
+    message.includes('server closed the connection') ||
+    message.includes('econnreset') ||
+    message.includes('econnrefused') ||
+    (error as { code?: string }).code === '57P01' || // admin_shutdown
+    (error as { code?: string }).code === '57P02' || // crash_shutdown
+    (error as { code?: string }).code === '57P03' // cannot_connect_now
+  );
+}
 
 /**
  * 获取 pg.Pool 单例。
@@ -34,6 +57,15 @@ export function getPool(): pg.Pool {
     max: 15,
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 5_000,
+    // 探测并维持 TCP 连接，降低被中间设备静默踢掉的概率
+    keepAlive: true,
+    keepAliveInitialDelayMillis: 10_000,
+    allowExitOnIdle: false,
+  });
+
+  // 空闲客户端意外断开时必须监听，否则会变成 Unhandled 'error' 并拖垮进程
+  pool.on('error', (error) => {
+    logger.warn(`PostgreSQL idle client error (pool will discard it): ${error.message}`);
   });
 
   return pool;
@@ -45,10 +77,27 @@ export function getPool(): pg.Pool {
  */
 export async function withClient<T>(fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
   const client = await getPool().connect();
+
+  // 借出期间连接中断时吞掉事件，避免 Unhandled 'error'；真实失败会在 query 上抛出
+  const onClientError = (error: Error) => {
+    logger.warn(`PostgreSQL checked-out client error: ${error.message}`);
+  };
+  client.on('error', onClientError);
+
   try {
     return await fn(client);
   } finally {
-    client.release();
+    client.removeListener('error', onClientError);
+    try {
+      client.release();
+    } catch (releaseError) {
+      // 连接已坏时 release 可能失败，忽略以免掩盖业务错误
+      logger.warn(
+        `PostgreSQL client release failed: ${
+          releaseError instanceof Error ? releaseError.message : String(releaseError)
+        }`,
+      );
+    }
   }
 }
 
@@ -63,7 +112,18 @@ export async function withSession<T>(fn: (client: pg.PoolClient) => Promise<T>):
       await client.query('COMMIT');
       return result;
     } catch (error) {
-      await client.query('ROLLBACK');
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        // 连接已断时 ROLLBACK 会失败；只记日志，继续抛出原始业务错误
+        if (!isConnectionError(rollbackError)) {
+          logger.warn(
+            `PostgreSQL ROLLBACK failed: ${
+              rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
+            }`,
+          );
+        }
+      }
       throw error;
     }
   });
