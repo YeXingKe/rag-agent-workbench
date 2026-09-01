@@ -116,27 +116,41 @@ async function copyPathWithLimit(sourcePath: string, targetPath: string, maxByte
  * @returns 落盘路径与实际字节数
  */
 export async function saveUploadFile(uploadFile: UploadLike): Promise<{ path: string; size: number }> {
+  // 从 multer 对象取原始文件名（originalname 优先，其次 filename）
   const filename = resolveUploadFilename(uploadFile);
+  // 没有可用文件名则无法落盘，按客户端错误返回 400
   if (!filename) {
     throw new StorageError(400, 'No filename provided');
   }
 
+  // 读取全局配置（含上传大小上限等）
   const settings = getSettings();
+  // 将 MB 配置换算为字节，供后续写入校验使用
   const maxBytes = settings.maxUploadSizeMb * 1024 * 1024;
+  // 生成安全落盘路径：uploads 目录 + UUID + 原扩展名
   const targetPath = buildStoragePath(filename);
 
   try {
+    // 记录最终写入的实际字节数
     let fileSize = 0;
+    // 优先：内存中的 buffer（multer memoryStorage）
     if (uploadFile.buffer) {
+      // 校验大小后一次性写入目标路径
       fileSize = await writeBufferWithLimit(targetPath, uploadFile.buffer, maxBytes);
+    // 其次：已有临时文件路径，流式拷贝到目标路径
     } else if (uploadFile.path) {
+      // 边读边写并累计大小，超限则中止并抛 413
       fileSize = await copyPathWithLimit(uploadFile.path, targetPath, maxBytes);
     } else {
+      // buffer 与 path 都没有，视为无效上传
       throw new StorageError(400, 'No filename provided');
     }
+    // 落盘成功：返回绝对路径与文件大小供上层入库使用
     return { path: targetPath, size: fileSize };
   } catch (error) {
+    // 写入中途失败时尽量删掉半成品文件，避免垃圾残留
     await fs.promises.unlink(targetPath).catch(() => undefined);
+    // 原样抛出，由 API 层映射 StorageError.statusCode
     throw error;
   }
 }

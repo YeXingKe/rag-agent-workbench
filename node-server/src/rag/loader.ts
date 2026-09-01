@@ -1,17 +1,24 @@
 /**
  * 文档加载器。
  *
- * RAG 入库上游：按扩展名选择解析器，把文件变成统一的 LoadedDocument（sections）。
- * PDF/DOCX 可先走 OCR 启发式；失败或未命中则回退原生解析。
+ * RAG 入库上游：按扩展名选择解析器，把磁盘文件 / 纯文本变成统一的 LoadedDocument（sections）。
+ * 下游 ingestLoadedDocument 只认这种结构，不再关心 PDF / Word / Markdown 的差异。
+ *
+ * 解析策略：
+ * - txt / md：读字节 → 探测编码 → 切 section
+ * - pdf / docx：先 OCR 启发式；未命中或失败则回退原生解析
+ * - 旧版 .doc：只走 OCR，未配置 OCR 则直接失败
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
 
+/** 探测文件编码（GBK / UTF-8 等），避免中文 txt 乱码 */
 import chardet from 'chardet';
+/** 按探测到的编码把 Buffer 解码成字符串 */
 import iconv from 'iconv-lite';
+/** 把 .docx 转成 HTML / 纯文本 */
 import mammoth from 'mammoth';
-
 import { OCRService, extractPdfPages, type OCRDetectionDecision } from '../services/ocr_service.js';
 import { createLogger } from '../utils/logger.js';
 import { cleanText } from '../utils/text.js';
@@ -19,23 +26,34 @@ import { cleanText } from '../utils/text.js';
 const logger = createLogger('rag.loader');
 
 /**
- * 解析后的逻辑片段。
+ * 解析后的一个逻辑片段（粗切，还不是最终 chunk）。
  *
- * 对外统一成 section，便于后续：
- * - 按页切分 PDF；
- * - 按标题切分 Markdown / Docx；
- * - 更细粒度的结构化抽取。
+ * 后续 ingest 会按 metadata.section_type 选 splitter，再把 text 切成可检索小段。
+ * 常见 section_type：pdf_page / markdown_heading / docx_heading_block / full_text / inline_text。
  */
 export interface LoadedSection {
+  /** 该片段正文 */
   text: string;
+  /**
+   * 溯源与路由元数据，例如：
+   * section_type、section_title、section_index、page_number、ocr_used
+   */
   metadata: Record<string, unknown>;
 }
 
-/** 加载器输出的统一文档结构。 */
+/**
+ * 加载器输出的统一文档结构。
+ *
+ * 一份文件 = 若干 sections；filename / file_type / parser_name 供入库写 document 行与日志排查。
+ */
 export class LoadedDocument {
+  /** 展示用文件名（上传场景下可能被改成 originalFilename） */
   filename: string;
+  /** 扩展名语义：txt / md / pdf / docx / doc */
   file_type: string;
+  /** 实际解析器名，如 markdown_loader、pypdf_loader、ocr_markdown_loader */
   parser_name: string;
+  /** 粗切后的逻辑片段列表 */
   sections: LoadedSection[];
 
   constructor(input: {
@@ -50,7 +68,7 @@ export class LoadedDocument {
     this.sections = input.sections;
   }
 
-  /** 返回完整正文，便于文档级摘要或统计复用。 */
+  /** 把非空 section 拼成完整正文，供摘要 / 统计；入库主路径仍遍历 sections。 */
   get fullText(): string {
     return this.sections
       .filter((section) => section.text.trim())
@@ -71,7 +89,10 @@ function detectTextEncoding(fileBytes: Buffer): string {
   return 'utf-8';
 }
 
-/** 按探测到的编码解码文件字节。 */
+/**
+ * 按探测到的编码解码文件字节。
+ * utf-8/ascii 走 Node 原生；其它编码（如 gbk）走 iconv-lite；未知编码再回退 utf-8。
+ */
 function decodeFileBytes(fileBytes: Buffer): string {
   const encoding = detectTextEncoding(fileBytes);
   const normalized = encoding.toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -84,6 +105,7 @@ function decodeFileBytes(fileBytes: Buffer): string {
   return fileBytes.toString('utf8');
 }
 
+/** 纯文本：整篇作为一个 full_text section，不再按标题切。 */
 async function loadTextFile(filePath: string): Promise<LoadedDocument> {
   const fileBytes = await fs.promises.readFile(filePath);
   const text = decodeFileBytes(fileBytes);
@@ -108,7 +130,11 @@ async function loadTextFile(filePath: string): Promise<LoadedDocument> {
   return loadedDocument;
 }
 
-/** 按 Markdown 标题（#）切成多个 section。 */
+/**
+ * 按 Markdown 标题行（# …）切成多个 heading section。
+ *
+ * 遇到新的 # 标题就 flush 上一段；全文没有标题时退回单个 full_text。
+ */
 function splitMarkdownSections(text: string): LoadedSection[] {
   const lines = text.split('\n');
   const sections: LoadedSection[] = [];
@@ -116,6 +142,7 @@ function splitMarkdownSections(text: string): LoadedSection[] {
   let currentLines: string[] = [];
   let sectionIndex = 0;
 
+  /** 把当前累计行写成一个 markdown_heading section（空内容则跳过）。 */
   const flushCurrentSection = (): void => {
     const content = cleanText(currentLines.join('\n'));
     if (!content) {
@@ -148,6 +175,7 @@ function splitMarkdownSections(text: string): LoadedSection[] {
     : [{ text: cleanText(text), metadata: { section_type: 'full_text', section_index: 0 } }];
 }
 
+/** Markdown 文件：解码后按标题切 section。 */
 async function loadMarkdownFile(filePath: string): Promise<LoadedDocument> {
   const fileBytes = await fs.promises.readFile(filePath);
   const text = decodeFileBytes(fileBytes);
@@ -167,7 +195,10 @@ async function loadMarkdownFile(filePath: string): Promise<LoadedDocument> {
   return loadedDocument;
 }
 
-/** 将 OCR Markdown 转成 LoadedDocument，并写入 OCR 决策元数据。 */
+/**
+ * 将 OCR 产出的 Markdown 转成 LoadedDocument。
+ * 每个 section 附带 OCR 决策元数据，并标记 ocr_used=true，供切分策略与前端溯源。
+ */
 function buildOcrLoadedDocument(input: {
   filePath: string;
   fileType: string;
@@ -178,6 +209,7 @@ function buildOcrLoadedDocument(input: {
   const decisionMetadata = input.decision.toMetadata();
   for (const section of sections) {
     let secType = section.metadata.section_type;
+    // 无标题的 OCR 全文也标成 markdown_heading，后续更倾向走 semi_structured 切分
     if (secType === 'full_text') {
       secType = 'markdown_heading';
     }
@@ -200,7 +232,9 @@ function buildOcrLoadedDocument(input: {
 /**
  * 尝试走 OCR 路径。
  *
- * 返回 null 表示应使用原生解析；抛错由调用方决定是否降级。
+ * - 返回 LoadedDocument：已判定需要 OCR 且解析成功
+ * - 返回 null：启发式认为不必 OCR，调用方应走原生解析
+ * - 抛错：OCR 调用失败，由调用方决定是否降级原生解析
  */
 async function tryLoadWithOcr(filePath: string, fileType: string): Promise<LoadedDocument | null> {
   const ocrService = new OCRService();
@@ -258,7 +292,10 @@ async function tryLoadWithOcr(filePath: string, fileType: string): Promise<Loade
   return loadedDocument;
 }
 
-/** PDF：优先 OCR，失败或未命中则按页原生提取文本。 */
+/**
+ * PDF 加载：优先 OCR；跳过或失败后按页原生抽文本。
+ * 每一页一个 pdf_page section（空页丢弃），page_number 为 1-based。
+ */
 async function loadPdfFile(filePath: string): Promise<LoadedDocument> {
   try {
     const ocrLoadedDocument = await tryLoadWithOcr(filePath, 'pdf');
@@ -307,7 +344,7 @@ async function loadPdfFile(filePath: string): Promise<LoadedDocument> {
   return loadedDocument;
 }
 
-/** 简易 HTML 去标签，保留换行与常见实体。 */
+/** 简易 HTML 去标签：保留换行与常见实体，供 DOCX 标题/段落抽文本。 */
 function stripTags(html: string): string {
   return html
     .replace(/<br\s*\/?>/gi, '\n')
@@ -321,7 +358,10 @@ function stripTags(html: string): string {
     .trim();
 }
 
-/** 从 mammoth HTML 中抽出标题与内容块（含 table）。 */
+/**
+ * 从 mammoth HTML 中抽出标题与内容块。
+ * h1–h6 → heading；p/ul/ol → 去标签后的正文；table 保留原始 HTML 便于后续结构化切分。
+ */
 function parseDocxHtmlBlocks(html: string): Array<{ kind: 'heading' | 'content'; text: string }> {
   const blocks: Array<{ kind: 'heading' | 'content'; text: string }> = [];
   const regex = /<(h[1-6]|p|table|ul|ol)(?:\s[^>]*)?>([\s\S]*?)<\/\1>/gi;
@@ -348,7 +388,10 @@ function parseDocxHtmlBlocks(html: string): Array<{ kind: 'heading' | 'content';
   return blocks;
 }
 
-/** DOCX：优先 OCR；否则按标题块原生切分，无结构时退回纯文本。 */
+/**
+ * DOCX 加载：优先 OCR；否则按标题块切成 docx_heading_block。
+ * 解析不出任何 section 时，退回 mammoth 纯文本，整篇一个 full_text。
+ */
 async function loadDocxFile(filePath: string): Promise<LoadedDocument> {
   try {
     const ocrLoadedDocument = await tryLoadWithOcr(filePath, 'docx');
@@ -398,6 +441,7 @@ async function loadDocxFile(filePath: string): Promise<LoadedDocument> {
   }
   flushCurrentSection();
 
+  // 没有标题结构时（纯段落文档）用 raw text 兜底，避免 sections 为空导致无法入库
   if (sections.length === 0) {
     const { value: plain } = await mammoth.extractRawText({ path: filePath });
     const plainText = cleanText(plain);
@@ -420,7 +464,10 @@ async function loadDocxFile(filePath: string): Promise<LoadedDocument> {
   return loadedDocument;
 }
 
-/** 旧版 .doc：仅支持 OCR 路径。 */
+/**
+ * 旧版 .doc（非 OOXML）：mammoth 无法稳定解析，只走 OCR。
+ * 未启用 OCR 或启发式判定不需要时抛错，避免 silently 产出空文档。
+ */
 async function loadDocFile(filePath: string): Promise<LoadedDocument> {
   const ocrLoadedDocument = await tryLoadWithOcr(filePath, 'doc');
   if (ocrLoadedDocument) {
@@ -430,8 +477,10 @@ async function loadDocFile(filePath: string): Promise<LoadedDocument> {
 }
 
 /**
- * 由纯文本构造 LoadedDocument（重建 chunk / 内联入库时使用）。
- * Markdown 文件名会按标题切 section。
+ * 由纯文本构造 LoadedDocument（无磁盘文件时）。
+ *
+ * 用途：ingest-text 入库、rebuild 时缺少 source_path 用旧 chunk 拼回正文。
+ * 文件名是 .md 则按标题切；否则整篇一个 inline_text section。
  */
 export function buildLoadedDocumentFromText(filename: string, text: string): LoadedDocument {
   const suffix = path.extname(filename).toLowerCase().replace(/^\./, '') || 'txt';
@@ -440,14 +489,14 @@ export function buildLoadedDocumentFromText(filename: string, text: string): Loa
     suffix === 'md'
       ? splitMarkdownSections(text)
       : [
-          {
-            text: cleanText(text),
-            metadata: {
-              section_type: sectionType,
-              section_index: 0,
-            },
+        {
+          text: cleanText(text),
+          metadata: {
+            section_type: sectionType,
+            section_index: 0,
           },
-        ];
+        },
+      ];
   const loadedDocument = new LoadedDocument({
     filename,
     file_type: suffix,
@@ -464,6 +513,7 @@ export function buildLoadedDocumentFromText(filename: string, text: string): Loa
   return loadedDocument;
 }
 
+/** 扩展名 → 加载函数。loadDocument 只查这张表。 */
 const LOADER_REGISTRY: Record<string, (filePath: string) => Promise<LoadedDocument>> = {
   doc: loadDocFile,
   txt: loadTextFile,
@@ -472,7 +522,11 @@ const LOADER_REGISTRY: Record<string, (filePath: string) => Promise<LoadedDocume
   docx: loadDocxFile,
 };
 
-/** 按扩展名分派到对应加载器。 */
+/**
+ * 按文件扩展名分派到对应加载器。
+ *
+ * @throws 未注册的扩展名（如 .xlsx）抛 Unsupported file type
+ */
 export async function loadDocument(filePath: string): Promise<LoadedDocument> {
   const fileType = path.extname(filePath).toLowerCase().replace(/^\./, '');
   const loader = LOADER_REGISTRY[fileType];

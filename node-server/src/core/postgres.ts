@@ -93,8 +93,7 @@ export async function withClient<T>(fn: (client: pg.PoolClient) => Promise<T>): 
     } catch (releaseError) {
       // 连接已坏时 release 可能失败，忽略以免掩盖业务错误
       logger.warn(
-        `PostgreSQL client release failed: ${
-          releaseError instanceof Error ? releaseError.message : String(releaseError)
+        `PostgreSQL client release failed: ${releaseError instanceof Error ? releaseError.message : String(releaseError)
         }`,
       );
     }
@@ -106,20 +105,19 @@ export async function withClient<T>(fn: (client: pg.PoolClient) => Promise<T>): 
  */
 export async function withSession<T>(fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
   return withClient(async (client) => {
-    await client.query('BEGIN');
+    await client.query('BEGIN'); // 开始一捆操作
     try {
       const result = await fn(client);
-      await client.query('COMMIT');
+      await client.query('COMMIT'); // 提交事务
       return result;
     } catch (error) {
       try {
-        await client.query('ROLLBACK');
+        await client.query('ROLLBACK'); // 回滚事务
       } catch (rollbackError) {
         // 连接已断时 ROLLBACK 会失败；只记日志，继续抛出原始业务错误
         if (!isConnectionError(rollbackError)) {
           logger.warn(
-            `PostgreSQL ROLLBACK failed: ${
-              rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
+            `PostgreSQL ROLLBACK failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
             }`,
           );
         }

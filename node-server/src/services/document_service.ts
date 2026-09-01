@@ -93,6 +93,21 @@ export class DocumentService {
 
   /**
    * 从已保存的本地文件创建文档并完成解析、切分与向量入库。
+   *
+   * 编排职责（本方法不直接碰解析/切分细节）：
+   * 1. 归一化 knowledgeBase / preferredSplitter
+   * 2. 校验切分策略名是否在 SPLITTER_REGISTRY 中
+   * 3. 委托 rag/ingest.ingestFileDocument：loadDocument → 切分 → 写 PG →（可选）写 Milvus
+   * 4. 标记 BM25 索引脏，触发后续词法检索重建
+   *
+   * 典型调用：API POST /documents/upload 在 persistUpload 落盘后，外层用 withSession 包裹事务。
+   *
+   * @param params.filePath 本地已保存的源文件绝对路径（如 storage/uploads/...）
+   * @param params.originalFilename 原始上传文件名（展示与扩展名推断）
+   * @param params.knowledgeBase 目标知识库，默认 default
+   * @param params.fileSize 文件字节数（可选，写入 document.file_size）
+   * @param params.preferredSplitter 可选切分策略名；null/undefined 表示自动推断
+   * @returns 入库后的 Document 行（含 status / chunk_count / summary）
    */
   async ingestFile(params: {
     filePath: string;
@@ -101,9 +116,13 @@ export class DocumentService {
     fileSize?: number | null;
     preferredSplitter?: string | null;
   }): Promise<DocumentRow> {
+    // 未指定知识库时落入默认库
     const knowledgeBase = params.knowledgeBase ?? 'default';
+    // null = 由 ingest 流水线按 section/file_type 自动选 splitter
     const preferredSplitter = params.preferredSplitter ?? null;
+    // 非法策略名尽早失败，避免进入昂贵的解析/切分/向量化流程
     this.validateSplitterName(preferredSplitter);
+    // 记录入库入参，便于排查「传了哪个文件、哪个库、哪种切分」
     logger.info(
       '[DOC] ingest_file: original_filename=%s file_path=%s knowledge_base=%s file_size=%s preferred_splitter=%s',
       params.originalFilename,
@@ -113,6 +132,8 @@ export class DocumentService {
       preferredSplitter ?? 'auto',
     );
 
+    // 核心入库：按路径加载文件 → LoadedDocument → ingestLoadedDocument
+    // this.db 通常是 withSession 借出的事务连接，保证 document/chunk 原子写入
     const document = await ingestFileDocument(this.db, {
       filePath: params.filePath,
       originalFilename: params.originalFilename,
@@ -121,7 +142,9 @@ export class DocumentService {
       preferredSplitter,
     });
 
+    // 文档内容变更后，内存 BM25 索引失效；markDirty 供下次检索前懒重建
     getBm25Index().markDirty(`document_ingested:${document.id}`);
+    // 记录结果摘要：状态、chunk 数、summary（可能含 milvus=skipped）
     logger.info(
       '[DOC] ingest_file done: document_id=%s filename=%s status=%s chunk_count=%s summary=%s',
       document.id,
@@ -130,6 +153,7 @@ export class DocumentService {
       document.chunk_count,
       document.summary,
     );
+    // 返回 Document 行，供 API 层 toDocumentItem 序列化给前端
     return document;
   }
 

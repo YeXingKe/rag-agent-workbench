@@ -111,31 +111,44 @@ router.post('/ingest-text', async (req, res, next) => {
 /**
  * POST /documents/upload
  * 上传文件并完成解析、切分与向量入库（multipart：file / knowledge_base / preferred_splitter）。
+ *
+ * 中间件 upload.single('file')：由 multer 解析 multipart，把单个文件挂到 req.file（内存 buffer）。
  */
 router.post('/upload', upload.single('file'), async (req, res, next) => {
+  // 记录本次已落盘路径；入库失败时用于回滚删除，避免垃圾文件残留
   let storedPath: string | null = null;
   try {
+    // multer 未收到名为 file 的字段，或未上传文件
     if (!req.file) {
       res.status(400).json({ detail: 'No filename provided' });
       return;
     }
 
+    // 从表单字段读取知识库名；非字符串或空串则回退到 default
     const knowledgeBase = typeof req.body?.knowledge_base === 'string' && req.body.knowledge_base.trim()
       ? req.body.knowledge_base
       : 'default';
+    // 可选切分策略原始值（structured / semi_structured / unstructured）
     const preferredSplitterRaw = req.body?.preferred_splitter;
+    // 有有效字符串则 trim 后使用；否则 null，交由入库逻辑自动推断策略
     const preferredSplitter =
       typeof preferredSplitterRaw === 'string' && preferredSplitterRaw.trim()
         ? preferredSplitterRaw.trim()
         : null;
 
+    // 将 multer 内存文件写入 storage/uploads，返回落盘路径与字节数
     const saved = await persistUpload(req.file);
+    // 记下路径，供 catch 中失败清理使用
     storedPath = saved.storedPath;
 
+    // 开启数据库会话，走完整 ingest：解析 → 切分 → 写 PG →（可选）写 Milvus
+    // 事务 = 保证多步数据库操作「全成或全不成」，避免半成品数据。
     const document = await withSession(async (db) => {
       const service = new DocumentService(db);
       return service.ingestFile({
+        // 本地已保存的源文件绝对路径
         filePath: saved.storedPath,
+        // 展示/类型推断用原始文件名；缺失时退回存储路径
         originalFilename: req.file?.originalname || saved.storedPath,
         knowledgeBase,
         fileSize: saved.fileSize,
@@ -143,27 +156,34 @@ router.post('/upload', upload.single('file'), async (req, res, next) => {
       });
     });
 
+    // 入库成功：201 + 文档 DTO + 人类可读 message（含 Milvus 降级提示）
     res.status(201).json({
       document: toDocumentItem(document),
       message: buildIngestMessage(document, true),
     });
   } catch (error) {
+    // 业务入库失败但文件已落盘：尝试删除半成品文件
     if (storedPath) {
       try {
+        // 动态导入，避免顶层强依赖 fs/promises
         const { unlink } = await import('node:fs/promises');
         await unlink(storedPath);
       } catch {
+        // 清理失败不影响主错误向上抛出/返回
         // ignore cleanup errors
       }
     }
+    // 存储层错误（如超大小 413、无文件名 400）→ 按 StorageError 自带状态码响应
     if (error instanceof StorageError) {
       res.status(error.statusCode).json({ detail: error.message });
       return;
     }
+    // 可预期的客户端参数错误（不支持的 splitter、空内容等）→ 400
     if (isClientValueError(error)) {
       res.status(400).json({ detail: error.message });
       return;
     }
+    // 其余异常交给全局错误中间件
     next(error);
   }
 });
