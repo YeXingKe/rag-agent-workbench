@@ -207,46 +207,61 @@ class AsyncLock {
 /**
  * 进程内 BM25 索引管理器。
  *
- * - markDirty：文档/chunk 变更后标记需重建；
- * - ensureReady / rebuild：从 Postgres 拉启用 chunk 重建语料；
- * - search：返回带分数与排序的候选命中。
+ * 不把索引存在 Postgres 里，而是启动后从 chunk 表把启用分块拉进内存建 BM25。
+ * - markDirty：文档/chunk 变更后标记需重建（ingest 成功后会调）
+ * - ensureReady / rebuild：从 Postgres 拉启用 chunk 重建语料
+ * - search：返回带分数与排序的候选，供 retriever 与向量结果做 RRF
  */
 export class BM25IndexManager {
+  /** 串行化 rebuild / 读快照，避免检索中途索引被换成一半 */
   private readonly lock = new AsyncLock();
+  /** true = 语料已过期，下次查询前必须 rebuild */
   private dirty = true;
+  /** 已构建的 BM25 模型；尚无语料时为 null */
   private bm25: BM25Okapi | null = null;
+  /** 与 bm25 语料下标对齐的命中记录（含 chunk 溯源字段） */
   private records: Bm25Record[] = [];
+  /** 累计重建次数，仅用于日志 */
   private rebuildCount = 0;
+  /** 最近一次 markDirty 的原因，写入 rebuild 日志 */
   private lastDirtyReason = 'initial';
 
-  /** 标记索引过期；下次查询前会触发 rebuild。 */
+  /**
+   * 标记索引过期。
+   * 不立刻重建（入库路径要快）；真正 rebuild 推迟到下次 search / ensureReady。
+   */
   markDirty(reason: string): void {
     this.dirty = true;
     this.lastDirtyReason = reason;
     logger.info('[BM25] index marked dirty: reason=%s', reason);
   }
 
-  /** 若索引脏或尚未构建，则重建。 */
+  /** 若索引脏或从未构建，则触发全量 rebuild。 */
   async ensureReady(): Promise<void> {
+    // 在锁内只读标志，避免和 rebuild 写字段打架
     const needsRebuild = await this.lock.run(() => this.dirty || this.bm25 === null);
     if (needsRebuild) {
       await this.rebuild();
     }
   }
 
-  /** 从数据库全量重建 BM25 语料与记录表。 */
+  /** 从数据库全量重建 BM25 语料与 records（只收录仍启用的 chunk）。 */
   async rebuild(): Promise<void> {
+    // withClient：只读查询，不需要事务
     const factory = getSessionFactory();
     const chunks = await factory.withClient(async (db) => listEnabledChunks(db));
 
     const records: Bm25Record[] = [];
+    // 每篇「文档」是一个 token 数组，下标必须和 records 一致
     const tokenizedCorpus: string[][] = [];
     let skippedCount = 0;
 
     for (const chunk of chunks) {
+      // 文件名/标题重复拼接，提高按文件名搜索的权重
       const lexicalText = buildLexicalDocument(chunk);
       const tokens = tokenizeForBm25(lexicalText);
       if (tokens.length === 0) {
+        // 空正文且无元数据词：无法建词法索引，跳过
         skippedCount += 1;
         continue;
       }
@@ -271,10 +286,12 @@ export class BM25IndexManager {
       tokenizedCorpus.push(tokens);
     }
 
+    // 语料为空时不要 new BM25Okapi（除零 / 无 IDF）
     const bm25 = tokenizedCorpus.length > 0 ? new BM25Okapi(tokenizedCorpus) : null;
 
     let rebuildCount = 0;
     let dirtyReason = this.lastDirtyReason;
+    // 一次性替换指针，检索侧拿到的是完整快照
     await this.lock.run(() => {
       this.bm25 = bm25;
       this.records = records;
@@ -301,13 +318,14 @@ export class BM25IndexManager {
   }
 
   /**
-   * 词法检索。
+   * 词法检索：query → token → 对每条 chunk 打 BM25 分 → 按分排序截断。
    *
-   * candidate_k 默认取 max(top_k, top_k*4)，为混合融合预留更多候选。
+   * candidate_k 默认 max(top_k, top_k*4)，给后面向量+BM25 的 RRF 多留一些候选。
    */
   async search(query: string, options: { top_k?: number; candidate_k?: number | null } = {}): Promise<Bm25Record[]> {
     const topK = options.top_k ?? 5;
     const candidateK = options.candidate_k;
+    // 脏索引先重建，再搜
     await this.ensureReady();
 
     const tokenizedQuery = tokenizeForBm25(query);
@@ -316,6 +334,7 @@ export class BM25IndexManager {
       return [];
     }
 
+    // 拷贝 records 引用数组，避免 rebuild 替换 this.records 时遍历到半新半旧
     const snapshot = await this.lock.run(() => ({
       bm25: this.bm25,
       records: [...this.records],
@@ -326,6 +345,7 @@ export class BM25IndexManager {
       return [];
     }
 
+    // scores[i] 对应 snapshot.records[i]
     const scores = snapshot.bm25.getScores(tokenizedQuery);
     const rankedScores = scores
       .map((score, index) => [index, score] as const)
@@ -336,9 +356,11 @@ export class BM25IndexManager {
     for (let rank = 0; rank < rankedScores.length; rank += 1) {
       const [index, score] = rankedScores[rank];
       if (score <= 0) {
+        // 无重叠词：分数为 0；已按分降序，后面一般也是 0
         continue;
       }
       const record = { ...snapshot.records[index] };
+      // 检索结果不必把内部 token 列表回给调用方
       delete record.bm25_tokens;
       record.score = score;
       record.bm25_score = score;

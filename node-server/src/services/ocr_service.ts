@@ -85,31 +85,65 @@ export class OCRDetectionDecision {
 }
 
 /**
- * 按页提取 PDF 文本层。
+ * 按页提取 PDF 的「文字层」（不是 OCR 认图）。
  *
- * 通过 pagerender 按 Y 坐标换行，尽量保留版面行结构。
+ * pdf-parse 默认会把整份 PDF 拼成一段；这里自定义 pagerender：
+ * 用每个文字块的 Y 坐标判断是否换行，尽量保住版面里的行结构。
+ *
+ * 返回：
+ * - pages：每一页抽出的文本（下标 0 = 第 1 页）
+ * - numpages：总页数
+ * - buffer：原始文件字节（调用方还要用来数图片 / 做启发式）
+ *
+ * 用途：OCR 决策（字少不多）以及 loader 原生解析 PDF（一页一个 section）。
+ */
+
+/**
+ * pdfParse：打开文件 → 按页走 → 调用 getTextContent() 拿到这一页所有字块
+ * PDF 不是 Word 那种「一段段文字」，而是一页画布上，很多「字块」各自带着坐标。解析就是把这些字块按位置拼回人能读的字符串
+ * 对每一页：
+  取出所有字块（阅读顺序大致从左到右、从上到下）
+  看当前块的 Y 和上一块是不是一样
+  一样 → 还在同一行，直接拼在后面
+  变了 → 换行，先加 \n 再拼
+  这一页拼完，推进 pages[]（第 0 项就是第 1 页）
  */
 export async function extractPdfPages(filePath: string): Promise<{ pages: string[]; numpages: number; buffer: Buffer }> {
+  // 把 PDF 整文件读进内存，后续解析和数图都用这份 buffer
   const buffer = await fs.promises.readFile(filePath);
+  // 按页收集文本；pagerender 每处理一页就 push 一次
   const pages: string[] = [];
+  // 调用 pdf-parse：传入自定义 pagerender，才能拿到「按页 + 按行」的文本
   const result = await pdfParse(buffer, {
+    // 每一页都会回调一次；pageData 是 PDF.js 的页面对象
     pagerender: async (pageData) => {
+      // 取出该页所有文字片段（每个 item 有 str 和 transform 矩阵）
       const textContent = await pageData.getTextContent();
+      // 上一片段的 Y 坐标；用来判断是否还在同一行
       let lastY: number | undefined;
+      // 当前页拼出来的纯文本
       let text = '';
+      // 按 PDF 给出的阅读顺序遍历每个文字块
       for (const item of textContent.items) {
+        // transform[5] 是该文字块的 Y（PDF 坐标系，原点在页脚附近）
         const currentY = item.transform?.[5];
+        // 同一行（Y 相同）或本页第一个块：直接拼在后面，不换行
         if (lastY === currentY || lastY === undefined) {
           text += item.str ?? '';
         } else {
+          // Y 变了 = 换到下一行，先插换行再拼字
           text += `\n${item.str ?? ''}`;
         }
+        // 记下当前 Y，供下一块比较
         lastY = currentY;
       }
+      // 本页拼完，放入 pages（即使是空字符串也占一页，方便后面按页统计）
       pages.push(text);
+      // 返回值给 pdf-parse 内部汇总；我们真正用的是上面的 pages 数组
       return text;
     },
   });
+  // pages 有内容用按页结果；否则退回 pdf-parse 自带的整篇 text（极端兜底）
   return { pages: pages.length > 0 ? pages : result.text ? [result.text] : [], numpages: result.numpages, buffer };
 }
 
@@ -219,9 +253,9 @@ export class OCRService {
     const currentSettings = getSettings();
     return Boolean(
       currentSettings.ocrEnabled &&
-        currentSettings.ocrTaskUrl &&
-        currentSettings.ocrQueryUrl &&
-        this.hasAuthMaterial(),
+      currentSettings.ocrTaskUrl &&
+      currentSettings.ocrQueryUrl &&
+      this.hasAuthMaterial(),
     );
   }
 
@@ -284,50 +318,71 @@ export class OCRService {
   }
 
   /**
-   * PDF OCR 决策启发：
-   * - 全页/大部分页文本过少；
-   * - 有图且平均文本密度低；
-   * - 表格式排版行数超阈值。
+   * PDF OCR 决策启发：只判断「要不要走 OCR」，并不真正认图。
+   *
+   * 命中任一条件则 shouldUseOcr=true：
+   * - 全页/大部分页文本过少（像扫描件）；
+   * - 有内嵌图且平均每页字数偏低；
+   * - 表格式排版行数超过阈值（原生抽文本容易乱）。
    */
   private async analyzePdf(filePath: string): Promise<OCRDetectionDecision> {
+    // 读阈值：ocrPdfMinPageChars / emptyPageRatio / lowTextAvgChars / tableLikeLineThreshold
     const settings = getSettings();
+    // 抽出每页文字层 + 原始 buffer（buffer 稍后用来数 /Image）
     const { pages, numpages, buffer } = await extractPdfPages(filePath);
+    // 总页数：优先 PDF 元数据；异常时退回 pages 数组长度
     const totalPages = numpages || pages.length;
+    // 全文合计字符数（清洗后）
     let extractedTextChars = 0;
+    // 「字太少」的页数，当作近似空页
     let emptyPageCount = 0;
+    // 看起来像表格行的累计条数（含 |、tab、多列空格对齐）
     let tableLikeLineCount = 0;
 
+    // 逐页统计字数、空页、表格行
     for (const page of pages) {
+      // 去掉空白噪音，空页会变成 ""
       const pageText = cleanText(page || '');
       extractedTextChars += pageText.length;
+      // 默认少于 80 字视为该页文字层不够（扫描页常见）
       if (pageText.length < settings.ocrPdfMinPageChars) {
         emptyPageCount += 1;
       }
+      // 累加本页疑似表格行
       tableLikeLineCount += countTableLikeLines(pageText);
     }
 
+    // 粗数 PDF 里 /Subtype /Image，扫描件通常 > 0
     const imageCount = countPdfImages(buffer);
+    // 平均每页字数；totalPages 为 0 时用 1 避免除零
     const avgTextChars = extractedTextChars / Math.max(totalPages, 1);
+    // 命中的原因列表；只要有一条，就建议 OCR
     const reasons: string[] = [];
+    // 每一页都字太少 → 很像整本扫描件
     if (totalPages > 0 && emptyPageCount === totalPages) {
       reasons.push('all_pages_have_too_little_text');
     }
+    // 空页占比达到阈值（默认 35%）→ 大部分页抽不出字
     if (totalPages > 0 && emptyPageCount / totalPages >= settings.ocrPdfEmptyPageRatio) {
       reasons.push('most_pages_have_too_little_text');
     }
+    // 有图 + 平均字数不超过阈值（默认 120）→ 图多字少
     if (imageCount > 0 && avgTextChars <= settings.ocrPdfLowTextAvgChars) {
       reasons.push('pdf_contains_images_and_low_text_density');
     }
+    // 表格行数达到阈值（默认 3）→ 原生按坐标抽文本容易乱栏
     if (tableLikeLineCount >= settings.ocrTableLikeLineThreshold) {
       reasons.push('pdf_contains_table_like_layout');
     }
 
+    // 打包决策：有 reason 就走 OCR；统计字段写入 metadata 方便排查
     return new OCRDetectionDecision({
       shouldUseOcr: reasons.length > 0,
       fileType: 'pdf',
       reasons,
       extractedTextChars,
       imageCount,
+      // 只记「是否像有表」，不精确数表格个数
       tableCount: tableLikeLineCount >= settings.ocrTableLikeLineThreshold ? 1 : 0,
       emptyBlockCount: emptyPageCount,
       totalBlockCount: totalPages,

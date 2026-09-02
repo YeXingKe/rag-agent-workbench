@@ -175,10 +175,16 @@ function splitMarkdownSections(text: string): LoadedSection[] {
     : [{ text: cleanText(text), metadata: { section_type: 'full_text', section_index: 0 } }];
 }
 
-/** Markdown 文件：解码后按标题切 section。 */
+/**
+ * Markdown 文件加载：读盘 → 按编码解码 → 按 # 标题切成多个 section。
+ * 不走 OCR；无标题时 splitMarkdownSections 会退回单个 full_text。
+ */
 async function loadMarkdownFile(filePath: string): Promise<LoadedDocument> {
+  // 以二进制读入，避免 Node 默认 utf-8 把 GBK 中文读乱
   const fileBytes = await fs.promises.readFile(filePath);
+  // chardet 探测编码后转成字符串（utf-8 / gbk 等）
   const text = decodeFileBytes(fileBytes);
+  // 组装统一中间结构；sections 按 Markdown 标题粗切，还不是最终 chunk
   const loadedDocument = new LoadedDocument({
     filename: path.basename(filePath),
     file_type: 'md',
@@ -359,16 +365,27 @@ function stripTags(html: string): string {
 }
 
 /**
- * 从 mammoth HTML 中抽出标题与内容块。
+ * 从 mammoth HTML 中抽出标题与内容块，供 loadDocxFile 按标题切 section。
+ *
  * h1–h6 → heading；p/ul/ol → 去标签后的正文；table 保留原始 HTML 便于后续结构化切分。
+ * 非这些标签（如 span、div 单独出现）会被跳过。
  */
 function parseDocxHtmlBlocks(html: string): Array<{ kind: 'heading' | 'content'; text: string }> {
+  // 按文档顺序收集块：heading 开新 section，content 追加到当前标题下
   const blocks: Array<{ kind: 'heading' | 'content'; text: string }> = [];
+  // 匹配成对标签：捕获组1=标签名，捕获组2=内部 HTML
+  // (?:\s[^>]*)? 允许 <p class="..."> 这种带属性的写法
+  // [\s\S]*? 非贪婪，避免一次吞掉多个同名标签
+  // \1 表示结束标签必须和开始标签同名；g 全局，i 忽略大小写
   const regex = /<(h[1-6]|p|table|ul|ol)(?:\s[^>]*)?>([\s\S]*?)<\/\1>/gi;
   let match: RegExpExecArray | null;
+  // exec + g：每次找到下一个匹配，直到 html 扫完
   while ((match = regex.exec(html)) !== null) {
+    // 标签名统一小写，后面用 startsWith('h') / === 'table' 判断
     const tag = match[1].toLowerCase();
+    // 标签内部的 HTML（还没去标签）
     const inner = match[2];
+    // h1–h6：这是 Word 标题，作为切 section 的边界
     if (tag.startsWith('h')) {
       const text = stripTags(inner);
       if (text) {
@@ -376,10 +393,12 @@ function parseDocxHtmlBlocks(html: string): Array<{ kind: 'heading' | 'content';
       }
       continue;
     }
+    // 表格：不去标签，整段 <table>...</table> 留给结构化 splitter
     if (tag === 'table') {
       blocks.push({ kind: 'content', text: match[0] });
       continue;
     }
+    // p / ul / ol：去掉 HTML 标签，只留可读正文
     const text = stripTags(inner);
     if (text) {
       blocks.push({ kind: 'content', text });
@@ -393,12 +412,16 @@ function parseDocxHtmlBlocks(html: string): Array<{ kind: 'heading' | 'content';
  * 解析不出任何 section 时，退回 mammoth 纯文本，整篇一个 full_text。
  */
 async function loadDocxFile(filePath: string): Promise<LoadedDocument> {
+  // ---------- 路径 1：尝试 OCR（扫描件 / 图多字少时） ----------
   try {
+    // 启发式判断是否 OCR；不需要则返回 null，需要则返回已切好的 LoadedDocument
     const ocrLoadedDocument = await tryLoadWithOcr(filePath, 'docx');
     if (ocrLoadedDocument) {
+      // OCR 成功：直接返回，不再走 mammoth 原生解析
       return ocrLoadedDocument;
     }
   } catch (error) {
+    // OCR 调用失败不阻断入库，降级到下面的 HTML 解析
     logger.warn('[OCR] Docx parsing failed, fallback to native parser: file=%s error=%s', path.basename(filePath), error);
     console.log('\n==================================================');
     console.log('👉 文档解析路线: 【原生解析】 (OCR 失败自动降级)');
@@ -407,13 +430,21 @@ async function loadDocxFile(filePath: string): Promise<LoadedDocument> {
     console.log('==================================================\n');
   }
 
+  // ---------- 路径 2：mammoth 把 .docx 转成 HTML，再按标题切 section ----------
+  // value 是 HTML 字符串（含 h1–h6 / p / table / ul / ol）
   const { value: html } = await mammoth.convertToHtml({ path: filePath });
+  // 把 HTML 拆成 heading | content 块序列
   const blocks = parseDocxHtmlBlocks(html);
+  // 最终输出的粗切片段（每个标题下一坨正文）
   const sections: LoadedSection[] = [];
+  // 当前标题；文档开头还没有 h 标签时用 Introduction
   let currentTitle = 'Introduction';
+  // 当前标题下累计的行（标题本身也会先放进去）
   let currentLines: string[] = [];
+  // section 序号，从 0 递增
   let sectionIndex = 0;
 
+  /** 把 currentLines 写成一个 docx_heading_block；空内容则跳过。 */
   const flushCurrentSection = (): void => {
     const content = cleanText(currentLines.join('\n'));
     if (!content) {
@@ -430,6 +461,7 @@ async function loadDocxFile(filePath: string): Promise<LoadedDocument> {
     sectionIndex += 1;
   };
 
+  // 遇到新标题就先 flush 上一段，再开始新段
   for (const block of blocks) {
     if (block.kind === 'heading') {
       flushCurrentSection();
@@ -437,17 +469,22 @@ async function loadDocxFile(filePath: string): Promise<LoadedDocument> {
       currentLines = [block.text];
       continue;
     }
+    // 普通段落 / 列表 / 表格：追加到当前标题下
     currentLines.push(block.text);
   }
+  // 循环结束后，最后一段还在缓冲区里，必须再 flush 一次
   flushCurrentSection();
 
-  // 没有标题结构时（纯段落文档）用 raw text 兜底，避免 sections 为空导致无法入库
+  // 没有标题结构时（纯段落、或 HTML 匹配不到块）sections 可能仍为空
   if (sections.length === 0) {
+    // 退回纯文本抽取，不再依赖 HTML 结构
     const { value: plain } = await mammoth.extractRawText({ path: filePath });
     const plainText = cleanText(plain);
+    // 整篇一个 full_text，避免无法入库
     sections.push({ text: plainText, metadata: { section_type: 'full_text', section_index: 0 } });
   }
 
+  // 组装统一中间结构，供 ingestLoadedDocument 继续切 chunk
   const loadedDocument = new LoadedDocument({
     filename: path.basename(filePath),
     file_type: 'docx',
